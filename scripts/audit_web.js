@@ -59,6 +59,9 @@ async function checkRoleOrder(page, path, label, expectFirst) {
   // ---------------------------------------------------------------- roles
   const desktop = await browser.newContext({ viewport: { width: 1400, height: 950 } });
   const page = await desktop.newPage();
+  // Behaviour checks run on the full product; the free tier's caps are
+  // asserted separately, so a paywall never masquerades as a broken feature.
+  await page.addInitScript("try{localStorage.setItem('dsa-tier','pro')}catch(e){}");
   page.on('pageerror', (e) => fail('js', e.message));
   page.on('console', (m) => {
     // A failed request to the live stats API is environmental, not a defect --
@@ -200,6 +203,7 @@ async function checkRoleOrder(page, path, label, expectFirst) {
   {
     // With no route mock this sandbox cannot reach statsapi.mlb.com, which is
     // precisely the failure a visitor on a restrictive network would hit.
+    // The desktop context already runs as Pro, so the live path is reachable.
     await page.goto(`${BASE}/#/player/ohtansh01`, { waitUntil: 'networkidle' });
     await page.waitForTimeout(11000);
     const txt = await page.evaluate(() => document.querySelector('#app').innerText);
@@ -212,6 +216,8 @@ async function checkRoleOrder(page, path, label, expectFirst) {
     const lp = await ctx.newPage();
     const jsErrors = [];
     lp.on('pageerror', (e) => jsErrors.push(e.message));
+    // Live stats are a Pro feature, so this has to run as Pro to reach them.
+    await lp.addInitScript("try{localStorage.setItem('dsa-tier','pro')}catch(e){}");
     await lp.route('**/statsapi.mlb.com/**', (route) => {
       const hitting = route.request().url().includes('group=hitting');
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
@@ -242,11 +248,118 @@ async function checkRoleOrder(page, path, label, expectFirst) {
 
   await desktop.close();
 
+  // ---------------------------------------------------------------- sports
+  console.log('\n— leagues —');
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+    const sp = await ctx.newPage();
+    const errs = [];
+    sp.on('pageerror', (e) => errs.push(e.message));
+    const accents = {};
+    for (const [id, expectH1] of [['mlb', 'Player Lookup'], ['nba', 'NBA Player Lookup'],
+                                  ['nfl', 'NFL Player Lookup']]) {
+      await sp.goto(`${BASE}/#/${id}/player`, { waitUntil: 'networkidle' });
+      await sp.waitForTimeout(600);
+      const d = await sp.evaluate(() => ({
+        sport: document.documentElement.dataset.sport,
+        accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
+        h1: (document.querySelector('#app h1') || {}).textContent || '',
+      }));
+      accents[id] = d.accent;
+      if (d.sport !== id) fail('leagues', `${id}: data-sport was "${d.sport}"`);
+      else if (!d.h1.includes(expectH1)) fail('leagues', `${id}: heading was "${d.h1}"`);
+      else ok('leagues', `${id} -> ${d.accent} · ${d.h1}`);
+    }
+    if (new Set(Object.values(accents)).size !== 3) {
+      fail('leagues', `accents are not distinct: ${JSON.stringify(accents)}`);
+    } else ok('leagues', 'each league has its own accent');
+
+    // Placeholder sports must say so rather than rendering an empty shell.
+    for (const id of ['nba', 'nfl']) {
+      await sp.goto(`${BASE}/#/${id}/career`, { waitUntil: 'networkidle' });
+      await sp.waitForTimeout(500);
+      const txt = await sp.evaluate(() => document.querySelector('#app').innerText);
+      if (!/data is not loaded yet/i.test(txt)) fail('leagues', `${id} career gave no explanation`);
+      else ok('leagues', `${id} data views explain themselves`);
+      await sp.goto(`${BASE}/#/${id}/scoring`, { waitUntil: 'networkidle' });
+      await sp.waitForTimeout(500);
+      const rules = await sp.$$eval('.rule', (n) => n.length);
+      const slots = await sp.$$eval('.slot', (n) => n.length);
+      if (!rules || !slots) fail('leagues', `${id} scoring page is empty (${rules} rules, ${slots} slots)`);
+      else ok('leagues', `${id} scoring: ${rules} rules, ${slots} roster slots`);
+    }
+
+    // An old link with no league prefix must still land on baseball.
+    await sp.goto(`${BASE}/#/player/bondsba01`, { waitUntil: 'networkidle' });
+    await sp.waitForTimeout(700);
+    const legacy = await sp.evaluate(() => ({
+      sport: document.documentElement.dataset.sport,
+      name: (document.querySelector('.ph-name') || {}).textContent,
+    }));
+    if (legacy.sport !== 'mlb' || legacy.name !== 'Barry Bonds') {
+      fail('leagues', `legacy link resolved to ${legacy.sport}/${legacy.name}`);
+    } else ok('leagues', 'pre-league links still resolve to baseball');
+    if (errs.length) fail('leagues', errs.join('|'));
+    await ctx.close();
+  }
+
+  // ----------------------------------------------------------------- tiers
+  console.log('\n— plans —');
+  {
+    const results = {};
+    for (const t of ['free', 'pro']) {
+      const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+      const tp = await ctx.newPage();
+      const errs = [];
+      tp.on('pageerror', (e) => errs.push(e.message));
+      await tp.addInitScript(`try{localStorage.setItem('dsa-tier','${t}')}catch(e){}`);
+
+      await tp.goto(`${BASE}/#/mlb/career`, { waitUntil: 'networkidle' });
+      await tp.waitForTimeout(1200);
+      const rows = await tp.$$eval('table.stats tbody tr', (n) => n.length);
+      const bar = !!(await tp.$('.upgrade-bar'));
+      const locked = !!(await tp.$('.btn.lock'));
+
+      await tp.goto(`${BASE}/#/mlb/player/bondsba01`, { waitUntil: 'networkidle' });
+      await tp.waitForTimeout(900);
+      const seasons = await tp.$$eval('table.stats tbody tr', (n) => n.length);
+
+      await tp.goto(`${BASE}/#/mlb/compare/bondsba01,ruthba01,henderi01`, { waitUntil: 'networkidle' });
+      await tp.waitForTimeout(800);
+      const cards = await tp.$$eval('.cmp-card', (n) => n.length);
+
+      await tp.goto(`${BASE}/#/mlb/live`, { waitUntil: 'networkidle' });
+      await tp.waitForTimeout(1200);
+      const liveGated = /Pro feature/i.test(await tp.evaluate(() => document.querySelector('#app').innerText));
+
+      results[t] = { rows, bar, locked, seasons, cards, liveGated };
+      if (errs.length) fail('plans', `${t}: ${errs.join('|')}`);
+      await ctx.close();
+    }
+
+    const f = results.free, pr = results.pro;
+    if (f.rows > 100) fail('plans', `free showed ${f.rows} board rows, cap is 100`);
+    else ok('plans', `free board capped at ${f.rows} rows`);
+    if (!f.bar) fail('plans', 'free board showed no upgrade prompt');
+    else ok('plans', 'free board explains the cap');
+    if (!f.locked) fail('plans', 'export was not locked on free');
+    else ok('plans', 'export locked on free');
+    if (f.seasons >= pr.seasons) fail('plans', `season log not capped (free ${f.seasons}, pro ${pr.seasons})`);
+    else ok('plans', `season log ${f.seasons} rows free vs ${pr.seasons} pro`);
+    if (f.cards !== 2 || pr.cards !== 3) fail('plans', `compare caps wrong (free ${f.cards}, pro ${pr.cards})`);
+    else ok('plans', 'compare capped at 2 on free, 3 shown on pro');
+    if (!f.liveGated) fail('plans', 'live stats were not gated on free');
+    else ok('plans', 'live stats are Pro-only');
+    if (pr.rows <= f.rows || pr.bar || pr.locked) fail('plans', 'pro did not unlock the board');
+    else ok('plans', `pro board shows ${pr.rows} rows, no caps`);
+  }
+
   // -------------------------------------------------------------- layout
   console.log('\n— layout —');
   const ROUTES = ['#/player/bondsba01', '#/player/riverma01', '#/player/ohtansh01',
                   '#/career', '#/season', '#/year/1998', '#/live', '#/compare/bondsba01,ruthba01',
-                  '#/scoring', '#/about', '#/contact', '#/privacy', '#/terms'];
+                  '#/scoring', '#/about', '#/contact', '#/privacy', '#/terms',
+                  '#/pricing', '#/nba/player', '#/nba/scoring', '#/nfl/career', '#/nfl/scoring'];
   for (const [w, h, name, mobile] of [[390, 844, 'phone', true], [1400, 950, 'desktop', false]]) {
     const ctx = await browser.newContext({
       viewport: { width: w, height: h }, isMobile: mobile,

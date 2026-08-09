@@ -733,11 +733,321 @@ select:focus, input:focus, textarea:focus {
 
 @media (max-width: 900px) {
   .topbar-inner { justify-content: center; }
-  .topbar-tools { width: 100%; justify-content: center; }
-  #globalSearch { width: 100%; max-width: none; }
-  .search-wrap { flex: 1; }
+  /* The toolbar now carries a league picker, search, a plan badge and the
+     theme button. Below 900px they get two rows: search on its own line, the
+     controls above it. min-width:0 is load-bearing — without it the input
+     refuses to shrink past its intrinsic size and pushes the page sideways. */
+  .topbar-tools { width: 100%; justify-content: center; flex-wrap: wrap; row-gap: 10px; }
+  .sport-switch { order: -1; }
+  .search-wrap { flex: 1 1 100%; min-width: 0; order: 1; }
+  #globalSearch { width: 100%; max-width: none; min-width: 0; }
   .rail { grid-template-columns: 84px 1fr 54px; gap: 9px; }
   .rail-legend { padding-left: 96px; padding-right: 54px; }
   .ph-name { font-size: 27px; }
   .foot-cols { gap: 28px; }
+}
+
+
+/* =========================================================== sport palettes
+ * The league sets the hue; the theme sets the ground. Each sport redefines
+ * only the accent ramp and the neutral tint, so every component below keeps
+ * working untouched. Accents are picked twice -- lighter for dark grounds,
+ * darker for light ones -- because a single mid-tone fails one of them.
+ * MLB: blue on black/grey/white. NBA: orange on white. NFL: brown on white.
+ */
+
+/* ---------------------------------------------------------------- MLB blue */
+:root[data-sport="mlb"] {
+  --accent:        #5aa9f0;
+  --accent-strong: #2f7fd4;
+  --accent-deep:   #123f70;
+  --accent-soft:   #8cc4f5;
+  --accent-pale:   #bcdcfa;
+  --accent-wash:   rgba(47, 127, 212, .12);
+  --accent-line:   rgba(90, 169, 240, .28);
+  --heat-rgb:      90, 169, 240;
+  --bg-glow-1:     rgba(47, 127, 212, .17);
+  --bg-glow-2:     rgba(90, 169, 240, .10);
+  --hero-wash:     rgba(18, 63, 112, .40);
+  --rail-3:        #2f5f8f;
+  --rail-4:        #5aa9f0;
+  /* neutrals: true blacks and greys, a hair cool */
+  --bg:            #07090c;
+  --surface:       #11151b;
+  --surface-2:     #171c24;
+  --surface-3:     #1f2530;
+  --border:        #262d38;
+  --border-strong: #333c4a;
+  --tile-a:        #171c24;
+  --tile-b:        #0e1116;
+  --panel-a:       #11151b;
+  --panel-b:       #0c0f14;
+  --rail-1:        #1a1f27;
+  --rail-2:        #262f3b;
+  --topbar-bg:     rgba(7, 9, 12, .90);
+  --surface-sunk:  rgba(0, 0, 0, .26);
+}
+:root[data-sport="mlb"][data-theme="light"] {
+  --accent:        #1c5fa8;
+  --accent-strong: #14497f;
+  --accent-deep:   #0d3560;
+  --accent-soft:   #2f7fd4;
+  --accent-pale:   #14497f;
+  --accent-wash:   rgba(28, 95, 168, .08);
+  --accent-line:   rgba(28, 95, 168, .20);
+  --heat-rgb:      28, 95, 168;
+  --bg-glow-1:     rgba(47, 127, 212, .10);
+  --bg-glow-2:     rgba(90, 169, 240, .07);
+  --hero-wash:     rgba(90, 169, 240, .16);
+  --rail-1:        #e8ecf2;
+  --rail-2:        #ccd8e6;
+  --rail-3:        #8fb6dd;
+  --rail-4:        #1c5fa8;
+  --bg:            #f6f8fa;
+  --surface:       #ffffff;
+  --surface-2:     #eef2f7;
+  --surface-3:     #e2e9f1;
+  --border:        #dde4ec;
+  --border-strong: #c5d0dd;
+  --text:          #101418;
+  --text-muted:    #545c66;
+  --text-faint:    #838b96;
+  --text-strong:   #05080b;
+  --tile-a:        #ffffff;
+  --tile-b:        #f4f7fa;
+  --panel-a:       #ffffff;
+  --panel-b:       #fafcfd;
+  --topbar-bg:     rgba(255, 255, 255, .92);
+  --surface-sunk:  rgba(28, 95, 168, .04);
+  --shadow:        0 10px 30px rgba(16, 42, 66, .13);
+}
+
+/* -------------------------------------------------------------- NBA orange */
+:root[data-sport="nba"] {
+  --accent:        #ff8b3d;
+  --accent-strong: #ef6c12;
+  --accent-deep:   #8a3a06;
+  --accent-soft:   #ffab72;
+  --accent-pale:   #ffcfab;
+  --accent-wash:   rgba(239, 108, 18, .12);
+  --accent-line:   rgba(255, 139, 61, .28);
+  --heat-rgb:      255, 139, 61;
+  --bg-glow-1:     rgba(239, 108, 18, .16);
+  --bg-glow-2:     rgba(255, 139, 61, .10);
+  --hero-wash:     rgba(138, 58, 6, .40);
+  --rail-3:        #a3541b;
+  --rail-4:        #ff8b3d;
+  --bg:            #0b0806;
+  --surface:       #17110d;
+  --surface-2:     #1f1712;
+  --surface-3:     #291f18;
+  --border:        #33261d;
+  --border-strong: #443328;
+  --tile-a:        #1f1712;
+  --tile-b:        #120d0a;
+  --panel-a:       #17110d;
+  --panel-b:       #100c09;
+  --rail-1:        #221a14;
+  --rail-2:        #33261d;
+  --topbar-bg:     rgba(11, 8, 6, .90);
+  --surface-sunk:  rgba(0, 0, 0, .26);
+}
+:root[data-sport="nba"][data-theme="light"] {
+  --accent:        #c2540a;
+  --accent-strong: #9e4308;
+  --accent-deep:   #7a3406;
+  --accent-soft:   #ef6c12;
+  --accent-pale:   #9e4308;
+  --accent-wash:   rgba(194, 84, 10, .08);
+  --accent-line:   rgba(194, 84, 10, .20);
+  --heat-rgb:      194, 84, 10;
+  --bg-glow-1:     rgba(239, 108, 18, .10);
+  --bg-glow-2:     rgba(255, 139, 61, .07);
+  --hero-wash:     rgba(255, 171, 114, .20);
+  --rail-1:        #f2ece7;
+  --rail-2:        #e6d5c6;
+  --rail-3:        #dda372;
+  --rail-4:        #c2540a;
+  --bg:            #fbf8f5;
+  --surface:       #ffffff;
+  --surface-2:     #f6efe9;
+  --surface-3:     #efe4da;
+  --border:        #eae0d7;
+  --border-strong: #d8c7b8;
+  --text:          #17110c;
+  --text-muted:    #5f544b;
+  --text-faint:    #8d8177;
+  --text-strong:   #0c0805;
+  --tile-a:        #ffffff;
+  --tile-b:        #fbf6f1;
+  --panel-a:       #ffffff;
+  --panel-b:       #fdfaf7;
+  --topbar-bg:     rgba(255, 255, 255, .92);
+  --surface-sunk:  rgba(194, 84, 10, .04);
+  --shadow:        0 10px 30px rgba(122, 52, 6, .13);
+}
+
+/* --------------------------------------------------------------- NFL brown */
+:root[data-sport="nfl"] {
+  --accent:        #c08a55;
+  --accent-strong: #8a5a2b;
+  --accent-deep:   #4a2f16;
+  --accent-soft:   #d6a97d;
+  --accent-pale:   #e6c8a6;
+  --accent-wash:   rgba(138, 90, 43, .14);
+  --accent-line:   rgba(192, 138, 85, .28);
+  --heat-rgb:      192, 138, 85;
+  --bg-glow-1:     rgba(138, 90, 43, .16);
+  --bg-glow-2:     rgba(192, 138, 85, .10);
+  --hero-wash:     rgba(74, 47, 22, .44);
+  --rail-3:        #7a5732;
+  --rail-4:        #c08a55;
+  --bg:            #0a0806;
+  --surface:       #15110c;
+  --surface-2:     #1d1710;
+  --surface-3:     #261e16;
+  --border:        #30251a;
+  --border-strong: #413224;
+  --tile-a:        #1d1710;
+  --tile-b:        #110d09;
+  --panel-a:       #15110c;
+  --panel-b:       #0f0c08;
+  --rail-1:        #201a13;
+  --rail-2:        #30251a;
+  --topbar-bg:     rgba(10, 8, 6, .90);
+  --surface-sunk:  rgba(0, 0, 0, .26);
+}
+:root[data-sport="nfl"][data-theme="light"] {
+  --accent:        #7a5027;
+  --accent-strong: #5f3d1d;
+  --accent-deep:   #452c14;
+  --accent-soft:   #8a5a2b;
+  --accent-pale:   #5f3d1d;
+  --accent-wash:   rgba(122, 80, 39, .08);
+  --accent-line:   rgba(122, 80, 39, .20);
+  --heat-rgb:      122, 80, 39;
+  --bg-glow-1:     rgba(138, 90, 43, .10);
+  --bg-glow-2:     rgba(192, 138, 85, .07);
+  --hero-wash:     rgba(214, 169, 125, .22);
+  --rail-1:        #f1ece6;
+  --rail-2:        #e3d6c5;
+  --rail-3:        #c3a279;
+  --rail-4:        #7a5027;
+  --bg:            #faf7f3;
+  --surface:       #ffffff;
+  --surface-2:     #f5efe7;
+  --surface-3:     #ede4d8;
+  --border:        #e8dfd3;
+  --border-strong: #d4c4b0;
+  --text:          #14100a;
+  --text-muted:    #5c5348;
+  --text-faint:    #8a8073;
+  --text-strong:   #0a0704;
+  --tile-a:        #ffffff;
+  --tile-b:        #faf6f1;
+  --panel-a:       #ffffff;
+  --panel-b:       #fdfbf8;
+  --topbar-bg:     rgba(255, 255, 255, .92);
+  --surface-sunk:  rgba(122, 80, 39, .05);
+  --shadow:        0 10px 30px rgba(74, 47, 22, .14);
+}
+
+/* ---------------------------------------------------------- sport switcher */
+.sport-switch {
+  display: flex; gap: 3px; padding: 3px;
+  border-radius: 999px; border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+}
+.sport-switch button {
+  display: flex; align-items: center; gap: 5px;
+  padding: 6px 14px; border: 0; border-radius: 999px; cursor: pointer;
+  background: transparent; color: var(--text-muted);
+  font-family: var(--sans); font-size: 12.5px; font-weight: 800;
+  letter-spacing: .06em; transition: background .15s, color .15s;
+}
+.sport-switch button:hover { color: var(--accent); }
+.sport-switch button.on {
+  background: linear-gradient(180deg, var(--accent-strong), var(--accent-deep));
+  color: var(--accent-ink);
+  box-shadow: 0 3px 12px var(--accent-line);
+}
+.sport-switch .soon {
+  font-size: 8.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 999px;
+  background: var(--surface-3); color: var(--text-faint); font-style: italic;
+}
+.sport-switch button.on .soon { background: rgba(0,0,0,.28); color: var(--accent-pale); }
+
+/* -------------------------------------------------------------- tier badge */
+.tier-badge {
+  padding: 5px 11px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border-strong); background: var(--surface-2);
+  color: var(--text-faint); font-size: 10px; font-weight: 800;
+  letter-spacing: .14em; text-decoration: none; white-space: nowrap;
+}
+.tier-badge:hover { border-color: var(--accent); color: var(--accent); }
+.tier-badge.pro {
+  background: linear-gradient(180deg, var(--accent-strong), var(--accent-deep));
+  color: var(--accent-ink); border-color: var(--accent);
+}
+.tier-badge.pro:hover { color: var(--accent-ink); }
+
+/* ------------------------------------------------------------ upgrade bars */
+.upgrade-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+  margin: 0; padding: 15px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--accent-wash);
+}
+.upgrade-text { display: flex; flex-direction: column; gap: 2px; text-align: left; }
+.upgrade-text b { color: var(--accent); font-size: 13.5px; }
+.upgrade-text span { color: var(--text-muted); font-size: 12px; font-style: italic; }
+.btn.lock { display: inline-flex; align-items: center; gap: 6px; opacity: .85; }
+.btn.lock .lock-icon { font-size: 11px; }
+.btn.ghost-btn { opacity: .6; cursor: default; }
+.btn.ghost-btn:hover { border-color: var(--border-strong); color: var(--text); }
+
+/* ------------------------------------------------------------------ plans */
+.plans {
+  display: grid; gap: 16px; padding: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  max-width: 820px; margin: 0 auto;
+}
+.plan {
+  position: relative; padding: 22px 20px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: linear-gradient(170deg, var(--tile-a), var(--tile-b));
+  text-align: center; display: flex; flex-direction: column; gap: 4px;
+}
+.plan.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-line); }
+.plan-flag {
+  position: absolute; top: -10px; left: 50%; transform: translateX(-50%);
+  padding: 3px 11px; border-radius: 999px; white-space: nowrap;
+  background: linear-gradient(180deg, var(--accent-strong), var(--accent-deep));
+  color: var(--accent-ink); font-size: 9px; font-weight: 800; letter-spacing: .13em;
+  text-transform: uppercase;
+}
+.plan h3 { margin: 0; font-size: 15px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted); }
+.plan-price {
+  font-family: var(--mono); font-size: 38px; font-weight: 700;
+  color: var(--text-strong); line-height: 1.1;
+}
+.plan-price .per { font-size: 13px; color: var(--text-faint); font-family: var(--sans); }
+.plan-blurb { margin: 0 0 10px; font-size: 12.5px; color: var(--text-muted); font-style: italic; }
+.plan-features { list-style: none; margin: 0 0 18px; padding: 0; text-align: left; flex: 1; }
+.plan-features li {
+  display: flex; gap: 9px; align-items: flex-start;
+  padding: 6px 0; font-size: 12.5px; color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.plan-features li.no { color: var(--text-faint); }
+.plan-features .mark { color: var(--accent); font-weight: 700; flex: none; width: 12px; }
+.plan-features li.no .mark { color: var(--text-faint); }
+.plan .btn { align-self: center; }
+
+@media (max-width: 900px) {
+  .sport-switch button { padding: 6px 11px; font-size: 12px; }
+  .upgrade-bar { justify-content: center; text-align: center; }
+  .upgrade-text { text-align: center; align-items: center; }
 }

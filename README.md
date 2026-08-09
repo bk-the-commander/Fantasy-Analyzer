@@ -13,6 +13,53 @@ Tools for a 12-team Yahoo H2H points, all-baseball, keeper league. Two pieces:
 Both read the scoring rules from the same `fantasy_baseball/config.py`, so they
 can't drift apart.
 
+## Leagues
+
+The site is multi-league. A switcher in the header picks **MLB**, **NBA** or
+**NFL**, and the whole page re-themes: MLB is blue on black/grey/white, NBA
+orange on white, NFL brown on white. Each league keeps its own accent ramp for
+both light and dark, so no combination falls back to another league's colour.
+
+| League | Status | What exists |
+| --- | --- | --- |
+| MLB | **Live** | Full dataset, 1871–2023, every view working |
+| NBA | Placeholder | Scoring rules and roster configured; no dataset yet |
+| NFL | Placeholder | Scoring rules and roster configured; no dataset yet |
+
+NBA and NFL scoring values are **placeholders** and say so on their own Scoring
+pages. Edit them in the `SPORTS` registry at the top of `web/app.js` and every
+page for that league follows. Their data views explain what a dataset would
+take rather than rendering an empty shell.
+
+Routes carry the league — `#/nba/career`, `#/mlb/player/bondsba01`. Links from
+before the site had leagues (`#/player/bondsba01`) still resolve to baseball.
+
+Adding a league is a registry entry plus a dataset in `web/data-<id>/` matching
+the MLB shape — not a second copy of the site.
+
+## Plans (free vs Pro)
+
+| | Free | Pro |
+| --- | --- | --- |
+| All-time leaderboards | Top 100 | Every row |
+| Player game log | 5 best seasons | Every season |
+| Single-season boards | Top 10 | Full board |
+| Compare | 2 players | Unlimited |
+| Live current-season stats | — | ✓ |
+| CSV export | — | ✓ |
+| Basketball & football | — | ✓ |
+
+Career totals, percentile rails and the points-by-season chart are free for
+every player — the ceiling is on depth, not on access.
+
+> **The paywall is a working demo, not a real one.** Gating runs entirely in
+> the browser, so it decides what the interface offers, not what a determined
+> visitor can reach — anyone can flip `localStorage.dsa-tier` in devtools.
+> Charging for real needs the Pro data served from behind an authenticated
+> endpoint. The plan switch on `#/pricing` exists so both experiences can be
+> seen side by side. Set `SITE.billing.checkoutUrl` to point Pro at a real
+> Stripe/Lemon Squeezy link, which replaces the demo switch.
+
 ## The web app
 
 A static site — plain HTML/CSS/JS plus a prebuilt JSON dataset. No server, no

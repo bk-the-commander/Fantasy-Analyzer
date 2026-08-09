@@ -65,6 +65,11 @@ const SITE = {
     client: '',              // AdSense publisher id, e.g. 'ca-pub-0000000000000000'
     slots: { leaderboard: '', inline: '' },
   },
+  billing: {
+    priceMonthly: 4,
+    priceYearly: 39,
+    checkoutUrl: '',   // Stripe/Lemon Squeezy link; empty keeps the demo switch
+  },
   support: {
     enabled: false,
     url: '',                 // Ko-fi / Buy Me a Coffee / Stripe payment link
@@ -73,9 +78,119 @@ const SITE = {
   },
 };
 
+// ------------------------------------------------------------------ sports
+//
+// One registry drives everything that differs between leagues: palette, nav,
+// scoring, roster, and where the data lives. Adding a sport is a new entry
+// here plus a dataset -- not a second copy of the site.
+//
+// MLB is `live`: it has a built dataset. NBA and NFL are `placeholder` -- the
+// pages, scoring tables and rosters are real and editable, but there is no
+// dataset behind them yet, and every data view says so rather than pretending.
+
+const SPORTS = {
+  mlb: {
+    id: 'mlb', short: 'MLB', league: 'MLB', name: 'Baseball',
+    status: 'live', dataDir: 'data',
+    tagline: 'Every MLB player since 1871, scored in your league’s points.',
+    searchPlaceholder: 'Search any player, 1871–present…',
+    // Scoring and roster come from meta.json, which the data build writes
+    // straight out of fantasy_baseball/config.py.
+  },
+
+  nba: {
+    id: 'nba', short: 'NBA', league: 'NBA', name: 'Basketball',
+    status: 'placeholder', dataDir: 'data-nba',
+    tagline: 'Every NBA player, scored in your league’s points.',
+    searchPlaceholder: 'Search any NBA player…',
+    league_settings: { size: 12, type: 'H2H Points' },
+    /* PLACEHOLDER SETTINGS -- replace with the real league's values. */
+    scoringGroups: [{
+      title: 'Scoring',
+      rules: {
+        'Point': 1, 'Rebound': 1.2, 'Assist': 1.5, 'Steal': 3, 'Block': 3,
+        'Turnover': -1, 'Three-pointer made': 0.5, 'Field goal made': 1,
+        'Field goal missed': -0.5, 'Free throw made': 1, 'Free throw missed': -0.5,
+        'Double-double': 1.5, 'Triple-double': 3,
+      },
+    }],
+    roster: ['PG', 'SG', 'G', 'SF', 'PF', 'F', 'C', 'C', 'Util', 'Util',
+             'BN', 'BN', 'BN', 'IL'],
+    dataNote: 'Historical NBA statistics are available from the public ' +
+      'stats.nba.com endpoints and from Basketball Reference’s downloadable ' +
+      'tables. Neither is wired up yet.',
+  },
+
+  nfl: {
+    id: 'nfl', short: 'NFL', league: 'NFL', name: 'Football',
+    status: 'placeholder', dataDir: 'data-nfl',
+    tagline: 'Every NFL player, scored in your league’s points.',
+    searchPlaceholder: 'Search any NFL player…',
+    league_settings: { size: 12, type: 'H2H Points' },
+    /* PLACEHOLDER SETTINGS -- replace with the real league's values. */
+    scoringGroups: [
+      { title: 'Passing', rules: {
+        'Passing yard': 0.04, 'Passing touchdown': 4, 'Interception thrown': -2,
+        '2-point conversion pass': 2, '300+ yard game': 1 } },
+      { title: 'Rushing & receiving', rules: {
+        'Rushing yard': 0.1, 'Rushing touchdown': 6, 'Reception': 0.5,
+        'Receiving yard': 0.1, 'Receiving touchdown': 6,
+        '100+ yard game': 1, '2-point conversion': 2, 'Fumble lost': -2 } },
+      { title: 'Kicking & defence', rules: {
+        'PAT made': 1, 'FG 0-39 yd': 3, 'FG 40-49 yd': 4, 'FG 50+ yd': 5,
+        'FG missed': -1, 'Sack': 1, 'Defensive interception': 2,
+        'Fumble recovery': 2, 'Defensive touchdown': 6, 'Safety': 2,
+        'Return touchdown': 6 } },
+    ],
+    roster: ['QB', 'RB', 'RB', 'WR', 'WR', 'WR', 'TE', 'W/R/T', 'K', 'DEF',
+             'BN', 'BN', 'BN', 'BN', 'BN', 'IR'],
+    dataNote: 'Historical NFL statistics are available from nflverse’s public ' +
+      'release files and from Pro Football Reference. Neither is wired up yet.',
+  },
+};
+
+const SPORT_IDS = Object.keys(SPORTS);
+const sport = () => SPORTS[state.sport] || SPORTS.mlb;
+
+// ------------------------------------------------------------- entitlement
+//
+// DEMO GATING ONLY. This runs entirely in the browser, so it decides what the
+// interface offers, not what a determined visitor can reach -- anyone can flip
+// the flag in devtools. Real paid access needs the premium data served from
+// behind an authenticated endpoint. See README "Monetization".
+
+const TIER_KEY = 'dsa-tier';
+
+const tier = () => {
+  try { return localStorage.getItem(TIER_KEY) === 'pro' ? 'pro' : 'free'; }
+  catch { return 'free'; }
+};
+const isPro = () => tier() === 'pro';
+
+function setTier(value) {
+  try { localStorage.setItem(TIER_KEY, value); } catch { /* private mode */ }
+  updateTierBadge();
+  route();
+}
+
+/** What the free tier stops at. Generous enough to be useful, short enough
+ *  that the ceiling is obvious. */
+const FREE = {
+  boardRows: 100,
+  seasonRows: 5,
+  comparePlayers: 2,
+  yearRows: 10,
+  liveStats: false,
+  export: false,
+  sports: ['mlb'],
+};
+
 // ---------------------------------------------------------------- constants
 
-const DATA = 'data';
+const DATA_DIRS = SPORT_IDS.reduce((acc, id) => {
+  acc[id] = SPORTS[id].dataDir;
+  return acc;
+}, {});
 
 /* Column layouts of the packed arrays written by the build script. Keeping
  * these as named index maps means the JSON stays small without the render
@@ -112,6 +227,7 @@ const state = {
   ranks: new Map(),   // board name -> Map(playerId -> rank)
   compare: [],        // player ids pinned in the Compare view
   view: null,
+  sport: 'mlb',       // active league; the URL is the source of truth
 };
 
 // ------------------------------------------------------------------ helpers
@@ -165,7 +281,7 @@ const EMBEDDED = typeof window !== 'undefined' ? (window.__DSA_DATA__ || null) :
 
 async function getJSON(path) {
   if (EMBEDDED && EMBEDDED[path]) return EMBEDDED[path];
-  const res = await fetch(`${DATA}/${path}`);
+  const res = await fetch(`${DATA_DIRS[state.sport] || 'data'}/${path}`);
   if (!res.ok) throw new Error(`${path}: ${res.status}`);
   return res.json();
 }
@@ -305,6 +421,123 @@ function initTheme() {
   setInterval(() => { if (themePref() === 'auto') applyTheme(); }, 5 * 60 * 1000);
   applyTheme();
 }
+
+// ------------------------------------------------------- sport + tier chrome
+
+function applySport(id) {
+  state.sport = SPORTS[id] ? id : 'mlb';
+  const s = sport();
+  document.documentElement.setAttribute('data-sport', s.id);
+
+  const search = $('#globalSearch');
+  if (search) search.placeholder = s.searchPlaceholder;
+  const sub = $('.brand-sub em');
+  if (sub) sub.textContent = `${s.league} · scored in your league’s points`;
+
+  document.querySelectorAll('#sportSwitch button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.sport === s.id);
+  });
+  // Every nav link carries the sport, so switching leagues keeps your place.
+  document.querySelectorAll('#tabs a').forEach((a) => {
+    a.setAttribute('href', `#/${s.id}/${a.dataset.view}`);
+  });
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) {
+    meta.setAttribute('content',
+      getComputedStyle(document.body).backgroundColor || '#0b0810');
+  }
+}
+
+function initSportSwitch() {
+  const wrap = $('#sportSwitch');
+  if (!wrap) return;
+  wrap.replaceChildren(...SPORT_IDS.map((id) => el('button', {
+    type: 'button', 'data-sport': id,
+    class: state.sport === id ? 'on' : '',
+    title: `${SPORTS[id].league} — ${SPORTS[id].name}`,
+    onclick: () => go(`#/${id}/player`),
+  }, SPORTS[id].short,
+     SPORTS[id].status === 'placeholder' ? el('span', { class: 'soon' }, 'soon') : null)));
+}
+
+function updateTierBadge() {
+  const badge = $('#tierBadge');
+  if (!badge) return;
+  const pro = isPro();
+  badge.className = `tier-badge${pro ? ' pro' : ''}`;
+  badge.textContent = pro ? 'PRO' : 'FREE';
+  badge.title = pro ? 'Pro features unlocked — tap to see plans'
+                    : 'Free plan — tap to see what Pro adds';
+}
+
+// --------------------------------------------------------------- gating UI
+
+/** The bar that replaces content the free plan does not include. */
+function upgradeBar(headline, detail) {
+  return el('div', { class: 'upgrade-bar' },
+    el('div', { class: 'upgrade-text' },
+      el('b', {}, headline),
+      detail ? el('span', {}, detail) : null),
+    el('a', { class: 'btn primary', href: '#/pricing' }, 'See Pro'));
+}
+
+/** Everything the free tier is allowed to see of a list. */
+function limitRows(rows, cap) {
+  return isPro() ? rows : rows.slice(0, cap);
+}
+
+function downloadCSV(rows, cols, filename) {
+  const header = cols.map((c) => c.label).join(',');
+  const body = rows.map((r) => cols.map((c) => {
+    const v = c.raw ? c.raw(r) : r[c.key];
+    const text = v === null || v === undefined ? '' : String(v);
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  }).join(',')).join('\n');
+  const blob = new Blob([`${header}\n${body}`], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = el('a', { href: url, download: filename });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportButton(rows, cols, filename) {
+  if (!isPro()) {
+    return el('a', { class: 'btn lock', href: '#/pricing', title: 'Pro feature' },
+      '↓ Export CSV', el('span', { class: 'lock-icon' }, '🔒'));
+  }
+  return el('button', { class: 'btn', onclick: () => downloadCSV(rows, cols, filename) },
+    '↓ Export CSV');
+}
+
+/** Panel shown for a sport whose dataset does not exist yet. */
+function awaitingData(viewName) {
+  const s = sport();
+  return el('div', {},
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' },
+        el('h2', {}, `${s.league} ${viewName}`),
+        el('span', { class: 'hint' }, 'Dataset not built yet')),
+      el('div', { class: 'empty-state' },
+        el('h3', {}, `${s.league} data is not loaded yet`),
+        el('div', {}, `The ${viewName.toLowerCase()} view is built and waiting on a ` +
+          `${s.league} dataset. Scoring rules and roster are already configured — ` +
+          'see the Scoring tab.')),
+      el('div', { class: 'note', html:
+        `<b>What it needs.</b> ${s.dataNote} Once a dataset is built into ` +
+        `<code>web/${s.dataDir}/</code> in the same shape as the MLB one, every ` +
+        'view on this page starts working with no further changes.' }),
+      watermark()),
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' }, el('h2', {}, 'Meanwhile')),
+      el('div', { class: 'empty-state' },
+        el('div', {}, 'Baseball is fully loaded — ',
+          el('a', { href: '#/mlb/career' }, 'browse the MLB leaders'), '.'))));
+}
+
+/** True when the current sport has a dataset behind it. */
+const sportHasData = () => sport().status === 'live';
 
 // --------------------------------------------------------------- watermark
 
@@ -756,10 +989,26 @@ async function viewPlayer(key) {
     seasonChart(seasons, (y) => go(playerHref(id, `?season=${y}`)), isCareer ? null : yr)));
 
   // --- season logs, in the same role order as the summary above -----------
+  // The free plan shows a player's best seasons rather than a truncated run
+  // of his first ones -- a taste of the real thing, not an arbitrary prefix.
+  const trim = (rows, ptsIndex) => {
+    if (isPro() || rows.length <= FREE.seasonRows) return rows;
+    return [...rows].sort((a, b) => b[ptsIndex] - a[ptsIndex])
+      .slice(0, FREE.seasonRows)
+      .sort((a, b) => a[0] - b[0]);
+  };
+  const batShown = trim(bat, B.PTS);
+  const pitShown = trim(pit, P.PTS);
   mount(container, (primaryPitcher
-    ? [pit.length && pitchingLog(pit, p), bat.length && battingLog(bat, p)]
-    : [bat.length && battingLog(bat, p), pit.length && pitchingLog(pit, p)]
+    ? [pit.length && pitchingLog(pitShown, p), bat.length && battingLog(batShown, p)]
+    : [bat.length && battingLog(batShown, p), pit.length && pitchingLog(pitShown, p)]
   ).filter(Boolean));
+  const hidden = (bat.length - batShown.length) + (pit.length - pitShown.length);
+  if (hidden > 0) {
+    mount(container, upgradeBar(
+      `${hidden} more ${hidden === 1 ? 'season' : 'seasons'} on Pro`,
+      `The free plan shows a player's ${FREE.seasonRows} best seasons.`));
+  }
 
   // --- data caveats, only where they actually bite ------------------------
   const firstYear = years[0];
@@ -787,7 +1036,7 @@ async function viewPlayer(key) {
   // so a slow or failed request never delays the historical view.
   const lastPlayed = years[years.length - 1];
   const season = SITE.live.season || new Date().getFullYear();
-  if (SITE.live.enabled && lastPlayed >= season - LIVE.activeWithin) {
+  if (SITE.live.enabled && isPro() && lastPlayed >= season - LIVE.activeWithin) {
     const live = await ensureLive();
     const block = liveBlockFor(p, live);
     if (block) card.after(block);
@@ -1039,11 +1288,21 @@ async function viewLeaders(kind) {
       return true;
     });
 
+    const shown = limitRows(filtered, FREE.boardRows);
+    const capped = shown.length < filtered.length;
     body.replaceChildren(
       el('div', { class: 'panel-head', style: 'border-top:1px solid var(--line)' },
         el('h2', {}, `${num(filtered.length)} ${isCareer ? 'players' : 'seasons'}`),
-        el('span', { class: 'hint' }, opts.group === 'batting' ? 'Batting' : 'Pitching')),
-      buildBoardTable(filtered, opts.group, isCareer));
+        el('span', { class: 'hint' },
+          (opts.group === 'batting' ? 'Batting' : 'Pitching') +
+          (capped ? ` · showing the top ${num(shown.length)}` : '')),
+        el('div', { style: 'margin-top:8px' },
+          exportButton(filtered, boardExportCols(opts.group, isCareer),
+            `${state.sport}-${isCareer ? 'career' : 'season'}-${opts.group}.csv`))),
+      buildBoardTable(shown, opts.group, isCareer),
+      capped ? upgradeBar(
+        `${num(filtered.length - shown.length)} more rows on Pro`,
+        'The free plan shows the top ' + num(FREE.boardRows) + '.') : null);
   };
 
   // --- filter controls ----------------------------------------------------
@@ -1076,6 +1335,17 @@ async function viewLeaders(kind) {
                     oninput: (e) => { opts.q = e.target.value; draw(); } })));
 
   draw();
+}
+
+/** Flat column set for CSV export -- names resolved, no DOM getters. */
+function boardExportCols(group, isCareer) {
+  const base = [{ key: 'name', label: 'Player', raw: (r) => r.name }];
+  const keys = group === 'batting'
+    ? (isCareer ? ['year0', 'year1', 'seasons', 'G', 'PA', 'HR', 'R', 'RBI', 'SB', 'BB', 'ptsg', 'ptspa', 'pts']
+                : ['year', 'team', 'lg', 'pos', 'G', 'PA', 'HR', 'R', 'RBI', 'SB', 'BB', 'ptsg', 'ptsplus', 'pts'])
+    : (isCareer ? ['year0', 'year1', 'seasons', 'G', 'GS', 'W', 'L', 'SV', 'IP', 'SO', 'ERA', 'ptsip', 'pts']
+                : ['year', 'team', 'lg', 'G', 'GS', 'W', 'L', 'SV', 'IP', 'SO', 'ERA', 'ptsplus', 'pts']);
+  return base.concat(keys.map((k) => ({ key: k, label: k })));
 }
 
 function playerLink(row) {
@@ -1164,12 +1434,19 @@ async function viewYear(year) {
   const bRows = bat.filter((r) => r.year === year).sort((a, b) => b.pts - a.pts);
   const pRows = pit.filter((r) => r.year === year).sort((a, b) => b.pts - a.pts);
 
-  const section = (title, rows, group) => el('div', {},
-    el('div', { class: 'panel-head', style: 'border-top:1px solid var(--line)' },
-      el('h2', {}, title),
-      el('span', { class: 'hint' }, rows.length ? `Top ${Math.min(rows.length, 40)} shown` : 'No data')),
-    rows.length ? buildBoardTable(rows, group, false)
-                : el('div', { class: 'empty-state' }, 'No qualifying players for this season.'));
+  const section = (title, rows, group) => {
+    const shown = limitRows(rows, FREE.yearRows);
+    return el('div', {},
+      el('div', { class: 'panel-head', style: 'border-top:1px solid var(--line)' },
+        el('h2', {}, title),
+        el('span', { class: 'hint' },
+          rows.length ? `Top ${Math.min(shown.length, 40)} shown` : 'No data')),
+      rows.length ? buildBoardTable(shown, group, false)
+                  : el('div', { class: 'empty-state' }, 'No qualifying players for this season.'),
+      shown.length < rows.length
+        ? upgradeBar(`${num(rows.length - shown.length)} more from ${year} on Pro`, null)
+        : null);
+  };
 
   wrap.replaceChildren(
     section(`${year} — batting leaders`, bRows, 'batting'),
@@ -1213,7 +1490,13 @@ async function viewCompare(idsParam) {
     return;
   }
 
-  const players = await Promise.all(ids.map((id) => getShard(id)));
+  const allowed = isPro() ? ids : ids.slice(0, FREE.comparePlayers);
+  const players = (await Promise.all(allowed.map((id) => getShard(id)))).filter(Boolean);
+  if (allowed.length < ids.length) {
+    grid.after(upgradeBar(
+      `Comparing ${ids.length} players needs Pro`,
+      `The free plan compares ${FREE.comparePlayers} at a time.`));
+  }
   const metrics = [
     ['Career points', (p) => (p.cb?.[CB.PTS] || 0) + (p.cp?.[CP.PTS] || 0), 0],
     ['Batting points', (p) => p.cb?.[CB.PTS] || 0, 0],
@@ -1286,9 +1569,11 @@ function viewScoring() {
     BS: 'Blown save',
   };
 
+  if (state.sport !== 'mlb') return viewScoringPlaceholder();
+
   app().replaceChildren(
     el('div', { class: 'view-head' },
-      el('h1', {}, 'League Scoring'),
+      el('h1', {}, `${sport().league} League Scoring`),
       el('p', {}, `${m.league.size}-team ${m.league.type}, all-baseball keeper league. ` +
         'Every number on this site is computed with exactly these weights — they are read ' +
         'straight out of fantasy_baseball/config.py at build time, so the site and the CLI can never drift apart.')),
@@ -1556,6 +1841,17 @@ async function viewLive() {
     el('div', { class: 'empty-state' }, el('div', { class: 'boot-spinner' })));
   app().replaceChildren(head, body);
 
+  if (!isPro() && !FREE.liveStats) {
+    return app().replaceChildren(head, el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' }, el('h2', {}, 'Current season — Pro')),
+      el('div', { class: 'empty-state' },
+        el('h3', {}, 'Live stats are a Pro feature'),
+        el('div', {}, 'Current-season totals are fetched fresh from the MLB Stats ' +
+          'API every time the page loads. Everything historical stays free.')),
+      upgradeBar('Unlock this season', 'Plus full leaderboards, exports and every league.'),
+      watermark()));
+  }
+
   const live = await ensureLive();
 
   if (live.status !== 'ready') {
@@ -1631,6 +1927,45 @@ async function viewLive() {
       'not — so a reliever here is scored on ' +
       `${live.pitchingCats.join(', ')}. Rare-event bonuses (${missing.join(', ')}) ` +
       'still need play-by-play data and score 0.' }));
+}
+
+/** Scoring page for a sport whose settings are configured but whose data is
+ *  not built yet. The rules below are placeholders, and say so. */
+function viewScoringPlaceholder() {
+  const s = sport();
+  app().replaceChildren(
+    el('div', { class: 'view-head' },
+      el('h1', {}, `${s.league} League Scoring`),
+      el('p', {}, `${s.league_settings.size}-team ${s.league_settings.type}. ` +
+        'These are placeholder settings — edit them in the SPORTS registry at the ' +
+        'top of app.js and every page here follows.')),
+
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' },
+        el('h2', {}, 'Scoring categories'),
+        el('span', { class: 'hint' }, 'Placeholder values')),
+      el('div', { class: 'rules' },
+        s.scoringGroups.map((group) => el('div', {},
+          el('div', { class: 'tile-label', style: 'margin-bottom:8px' }, group.title),
+          el('div', { class: 'rule-list' },
+            Object.entries(group.rules).map(([label, weight]) =>
+              el('div', { class: 'rule' },
+                el('span', {}, label),
+                el('span', { class: `w${weight < 0 ? ' neg' : ''}` },
+                  weight > 0 ? `+${weight}` : String(weight)))))))),
+      watermark()),
+
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' }, el('h2', {}, 'Roster')),
+      el('div', { class: 'roster-slots' },
+        s.roster.map((slot) => el('span', { class: 'slot' }, slot)))),
+
+    el('div', { class: 'note', html:
+      `<b>Placeholder, not the real league.</b> Swap these for your actual ` +
+      `${s.league} settings and they become the scoring every ${s.league} page ` +
+      'uses — the same way the baseball rules are read straight out of ' +
+      '<code>fantasy_baseball/config.py</code> at build time.' }),
+    el('div', { class: 'note', html: `<b>Data.</b> ${s.dataNote}` }));
 }
 
 // ------------------------------------------------------------ site pages
@@ -1821,6 +2156,86 @@ function viewContact() {
         watermark(true))));
 }
 
+function viewPricing() {
+  const pro = isPro();
+  const plan = (name, price, per, blurb, features, current, cta) =>
+    el('div', { class: `plan${current ? ' current' : ''}` },
+      current ? el('div', { class: 'plan-flag' }, 'Your plan') : null,
+      el('h3', {}, name),
+      el('div', { class: 'plan-price' }, price,
+        per ? el('span', { class: 'per' }, per) : null),
+      el('p', { class: 'plan-blurb' }, blurb),
+      el('ul', { class: 'plan-features' },
+        features.map(([has, text]) => el('li', { class: has ? 'yes' : 'no' },
+          el('span', { class: 'mark' }, has ? '✓' : '—'), text))),
+      cta);
+
+  const freeCta = pro
+    ? el('button', { class: 'btn', onclick: () => setTier('free') }, 'Switch to Free')
+    : el('span', { class: 'btn ghost-btn' }, 'Current plan');
+
+  const proCta = pro
+    ? el('span', { class: 'btn ghost-btn' }, 'Current plan')
+    : (SITE.billing.checkoutUrl
+        ? el('a', { class: 'btn primary', href: SITE.billing.checkoutUrl,
+                    target: '_blank', rel: 'noopener' },
+            `Get Pro — $${SITE.billing.priceMonthly}/mo`)
+        : el('button', { class: 'btn primary', onclick: () => setTier('pro') },
+            'Preview Pro (demo)'));
+
+  app().replaceChildren(
+    el('div', { class: 'view-head' },
+      el('h1', {}, 'Plans'),
+      el('p', {}, 'The whole record book is free to browse. Pro removes the ' +
+        'caps, unlocks live current-season data, and adds every league.')),
+
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' }, el('h2', {}, 'Free vs Pro')),
+      el('div', { class: 'plans' },
+        plan('Free', '$0', null,
+          'Enough to settle most arguments.',
+          [[true, `Top ${FREE.boardRows} of every all-time leaderboard`],
+           [true, 'Full career totals and percentile rails for any player'],
+           [true, `${FREE.seasonRows} seasons of any player's game log`],
+           [true, `Top ${FREE.yearRows} of any single season, back to 1871`],
+           [true, `Compare up to ${FREE.comparePlayers} players`],
+           [false, 'Live current-season stats'],
+           [false, 'CSV export'],
+           [false, 'Basketball and football']],
+          !pro, freeCta),
+
+        plan('Pro', `$${SITE.billing.priceMonthly}`, '/month',
+          'The full dataset, no ceilings.',
+          [[true, 'Every row of every leaderboard — all 20,653 players'],
+           [true, 'Complete season-by-season logs, every year'],
+           [true, 'Full single-season boards for all 150+ seasons'],
+           [true, 'Compare as many players as you like'],
+           [true, 'Live current-season stats, refreshed on every load'],
+           [true, 'CSV export from any table'],
+           [true, 'Basketball and football as they land'],
+           [true, 'No ads']],
+          pro, proCta)),
+      watermark()),
+
+    el('div', { class: 'note', html:
+      '<b>This is a working demo of the paywall, not a real one.</b> The plan ' +
+      'switch above runs entirely in your browser, so it decides what the ' +
+      'interface offers — not what a determined visitor can reach. Charging for ' +
+      'access needs the Pro data served from behind an authenticated endpoint; ' +
+      'a purely client-side gate can be flipped by anyone who opens devtools. ' +
+      'Use the switch to see both experiences.' }),
+
+    el('div', { class: 'note', html:
+      '<b>What can and cannot be sold.</b> The underlying statistics are ' +
+      '<a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank" ' +
+      'rel="noopener">CC BY-SA 3.0</a>, which permits commercial use but requires ' +
+      'attribution and share-alike on derivative databases. Selling tools, ' +
+      'analysis and convenience is clean; putting the raw dataset behind a ' +
+      'paywall is where that licence starts to bite.' }));
+
+  mount(app(), adSlot('inline'));
+}
+
 function viewPrivacy() {
   const ads = SITE.ads.enabled;
   app().replaceChildren(
@@ -1975,11 +2390,33 @@ function go(hash) {
 async function route() {
   const raw = location.hash.replace(/^#\/?/, '') || 'player';
   const [path] = raw.split('?');
-  const [view, arg] = path.split('/');
+  const parts = path.split('/');
+
+  // Routes are #/<sport>/<view>/<arg>. A first segment that is not a known
+  // sport means an older link from before the site had leagues -- treat it as
+  // a view under baseball so nothing anyone bookmarked breaks.
+  const hasSport = SPORTS[parts[0]] !== undefined;
+  const sportId = hasSport ? parts[0] : 'mlb';
+  const [view, arg] = hasSport ? parts.slice(1) : parts;
+
+  if (sportId !== state.sport) applySport(sportId);
 
   document.querySelectorAll('#tabs a').forEach((a) =>
-    a.classList.toggle('active', a.dataset.view === view));
+    a.classList.toggle('active', a.dataset.view === (view || 'player')));
   window.scrollTo({ top: 0 });
+
+  // Data views need a dataset. Reference and account pages work everywhere.
+  const dataViews = ['player', 'career', 'season', 'year', 'live', 'compare'];
+  if (dataViews.includes(view || 'player') && !sportHasData()) {
+    const labels = { player: 'Player Lookup', career: 'Career Leaders',
+                     season: 'Season Leaders', year: 'Year Explorer',
+                     live: 'This Season', compare: 'Compare' };
+    return app().replaceChildren(
+      el('div', { class: 'view-head' },
+        el('h1', {}, `${sport().league} ${labels[view || 'player']}`),
+        el('p', {}, sport().tagline)),
+      awaitingData(labels[view || 'player']));
+  }
 
   try {
     switch (view) {
@@ -1994,6 +2431,7 @@ async function route() {
       case 'contact': viewContact(); break;
       case 'privacy': viewPrivacy(); break;
       case 'terms':   viewTerms(); break;
+      case 'pricing': viewPricing(); break;
       default:        await viewPlayer(null);
     }
   } catch (err) {
@@ -2019,6 +2457,9 @@ async function boot() {
     idPos = new Map(index.ids.map((id, i) => [id, i]));
     pidPos = new Map((index.pid || []).map((pid, i) => [pid, i]));
 
+    initSportSwitch();
+    applySport(state.sport);
+    updateTierBadge();
     renderFooter();
     warnUnsetConfig();
     initSearch();
