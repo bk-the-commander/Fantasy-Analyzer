@@ -354,11 +354,19 @@ main {
   font-size: 10px; letter-spacing: .13em; text-transform: uppercase;
   color: var(--text-faint); margin-bottom: 7px;
 }
+/* Values run from "22" to "171·2,227·1,996", so the size is fluid rather than
+   fixed -- a single hardcoded size either clips the long ones on a phone or
+   wastes the tile on the short ones. */
 .tile-value {
-  font-family: var(--mono); font-size: 27px; font-weight: 700;
-  color: var(--text-strong); line-height: 1;
+  font-family: var(--mono); font-size: clamp(17px, 4.4vw, 27px); font-weight: 700;
+  color: var(--text-strong); line-height: 1.1; white-space: nowrap;
 }
-.tile.hero .tile-value { font-size: 34px; color: var(--accent); }
+.tile.hero .tile-value {
+  font-size: clamp(26px, 6vw, 34px); color: var(--accent);
+}
+/* Multi-part values (HR·R·RBI, W–L·SV, K·ERA) carry three numbers in the space
+   the others use for one, so they get their own step on the scale. */
+.tile-value.compound { font-size: clamp(15px, 2.4vw, 21px); letter-spacing: -.01em; }
 .tile-sub { margin-top: 6px; font-size: 11.5px; color: var(--text-muted); font-style: italic; }
 .tile-sub .rank { color: var(--accent); font-weight: 700; font-style: normal; }
 
@@ -683,6 +691,20 @@ select:focus, input:focus, textarea:focus {
 .foot-mark {
   margin-top: 12px; font-size: 10px; letter-spacing: .2em; text-transform: uppercase;
   color: var(--text-faint); opacity: .6; font-style: italic;
+}
+
+@media (max-width: 560px) {
+  .tiles { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding: 14px; }
+  .tile { padding: 13px 11px; }
+  .tile-label { font-size: 9px; letter-spacing: .1em; }
+  .rail { grid-template-columns: 70px 1fr 62px; gap: 8px; }
+  .rail-label { font-size: 11px; }
+  .rail-value { font-size: 11.5px; }
+  .rail-legend { padding-left: 78px; padding-right: 62px; font-size: 9px; }
+  .rails { padding: 6px 12px 18px; }
+  .player-hero { padding: 20px 14px 18px; }
+  .prose { padding: 18px 16px 22px; }
+  .note { margin: 14px 12px; padding: 12px 14px; }
 }
 
 @media (max-width: 900px) {

@@ -150,13 +150,20 @@ const ordinal = (n) => {
 };
 const norm = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
+/* The packaged single-file preview inlines its data on the page instead of
+ * serving it, so there is nothing to fetch. Everything downstream of these two
+ * functions is identical in both builds. */
+const EMBEDDED = typeof window !== 'undefined' ? (window.__DSA_DATA__ || null) : null;
+
 async function getJSON(path) {
+  if (EMBEDDED && EMBEDDED[path]) return EMBEDDED[path];
   const res = await fetch(`${DATA}/${path}`);
   if (!res.ok) throw new Error(`${path}: ${res.status}`);
   return res.json();
 }
 
 async function getShard(id) {
+  if (EMBEDDED) return EMBEDDED.players[String(id)] || null;
   const s = id % state.meta.shards;
   if (!state.shards.has(s)) state.shards.set(s, await getJSON(`players/${s}.json`));
   return state.shards.get(s)[String(id)];
@@ -439,9 +446,12 @@ function initSearch() {
 // ------------------------------------------------------------ UI components
 
 function tile(label, value, sub, hero = false) {
+  // "171·428·437" needs a different size from "6" — a single headline size
+  // either clips the compound values or wastes the tile on the short ones.
+  const compound = typeof value === 'string' && /[·–]/.test(value);
   return el('div', { class: `tile${hero ? ' hero' : ''}` },
     el('div', { class: 'tile-label' }, label),
-    el('div', { class: 'tile-value' }, value),
+    el('div', { class: `tile-value${compound ? ' compound' : ''}` }, value),
     sub ? el('div', { class: 'tile-sub', html: sub }) : null);
 }
 
@@ -638,7 +648,15 @@ async function viewPlayer(key) {
   }
 
   const p = await getShard(id);
-  if (!p) return app().replaceChildren(el('div', { class: 'empty-state' }, 'Player not found.'));
+  if (!p) {
+    return app().replaceChildren(el('div', { class: 'empty-state' },
+      el('h3', {}, EMBEDDED ? 'Not in this preview' : 'Player not found'),
+      el('div', {}, EMBEDDED
+        ? `This preview carries full season logs for the ${num(EMBEDDED.playerCount)} ` +
+          'highest-scoring careers. Search still covers all ' +
+          `${num(state.meta.players)} players, and the deployed site has every one of them.`
+        : 'Check the link and try again.')));
+  }
 
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
   const scope = params.get('season') || 'career';
