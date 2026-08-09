@@ -282,19 +282,37 @@ async function checkRoleOrder(page, path, label, expectFirst) {
       fail('leagues', `accents are not distinct: ${JSON.stringify(accents)}`);
     } else ok('leagues', 'each league has its own accent');
 
-    // Placeholder sports must say so rather than rendering an empty shell.
-    for (const id of ['nba', 'nfl']) {
+    // Football and basketball now have real datasets: their boards must carry
+    // the leaders anyone would recognise, not just render without erroring.
+    for (const [id, expected] of [['nfl', 'Tom Brady'], ['nba', 'LeBron James']]) {
       await sp.goto(`${BASE}/#/${id}/career`, { waitUntil: 'networkidle' });
-      await sp.waitForTimeout(500);
-      const txt = await sp.evaluate(() => document.querySelector('#app').innerText);
-      if (!/data is not loaded yet/i.test(txt)) fail('leagues', `${id} career gave no explanation`);
-      else ok('leagues', `${id} data views explain themselves`);
+      await sp.waitForTimeout(1800);
+      const leader = await sp.$eval('table.stats tbody tr td:nth-child(2)',
+        (n) => n.textContent.trim()).catch(() => null);
+      if (leader !== expected) fail('leagues', `${id} career leader was "${leader}", expected ${expected}`);
+      else ok('leagues', `${id} career board leads with ${leader}`);
       await sp.goto(`${BASE}/#/${id}/scoring`, { waitUntil: 'networkidle' });
-      await sp.waitForTimeout(500);
+      await sp.waitForTimeout(700);
       const rules = await sp.$$eval('.rule', (n) => n.length);
       const slots = await sp.$$eval('.slot', (n) => n.length);
       if (!rules || !slots) fail('leagues', `${id} scoring page is empty (${rules} rules, ${slots} slots)`);
       else ok('leagues', `${id} scoring: ${rules} rules, ${slots} roster slots`);
+    }
+
+    // A search inside one league must open that league's player, not the
+    // baseball player who happens to sit at the same index.
+    for (const [id, query, expected] of [['nfl', 'brady', 'Tom Brady'],
+                                         ['nba', 'lebron', 'LeBron James'],
+                                         ['mlb', 'bonds', 'Barry Bonds']]) {
+      await sp.goto(`${BASE}/#/${id}/player`, { waitUntil: 'networkidle' });
+      await sp.waitForTimeout(900);
+      await sp.fill('#globalSearch', query);
+      await sp.waitForTimeout(450);
+      await sp.keyboard.press('Enter');
+      await sp.waitForTimeout(1600);
+      const opened = await sp.$eval('.ph-name', (n) => n.textContent).catch(() => null);
+      if (opened !== expected) fail('leagues', `${id} search "${query}" opened "${opened}"`);
+      else ok('leagues', `${id} search "${query}" -> ${opened}`);
     }
 
     // An old link with no league prefix must still land on baseball.
@@ -517,12 +535,62 @@ async function checkRoleOrder(page, path, label, expectFirst) {
     await ctx.close();
   }
 
+  // ------------------------------------------------------- health + chat
+  console.log('\n— health and assistant —');
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+    const hp = await ctx.newPage();
+    const errs = [];
+    hp.on('pageerror', (e) => errs.push(e.message));
+    await hp.goto(`${BASE}/#/health`, { waitUntil: 'networkidle' });
+    await hp.waitForTimeout(3500);
+    const items = await hp.$$eval('.health-item', (n) => n.length);
+    const pills = await hp.$$eval('.admin-row .pill', (n) => n.map((x) => x.textContent));
+    if (items < 10) fail('health', `only ${items} surfaces listed`);
+    else ok('health', `${items} surfaces documented`);
+    if (pills.some((t) => t === 'ERROR')) fail('health', `a dataset failed to load: ${pills}`);
+    else ok('health', `all ${pills.length} datasets load (${pills.join(', ')})`);
+
+    // The assistant must be right, not merely responsive. These have known
+    // answers; a wrong one means the query engine is reading the wrong column.
+    const asks = [
+      ['mlb', 'Who led MLB in home runs in 1972?', /Johnny Bench/],
+      ['mlb', 'Who has the most Cy Young awards of all time?', /Roger Clemens/],
+      ['mlb', 'most stolen bases all time', /Rickey Henderson/],
+      ['nfl', 'Who led the NFL in passing yards in 2013?', /Peyton Manning/],
+      ['nfl', 'Who led the NFL in rushing yards in 2012?', /Adrian Peterson/],
+      ['nba', 'Who led the NBA in points in 2016?', /Russell Westbrook/],
+    ];
+    for (const [id, question, expect] of asks) {
+      await hp.goto(`${BASE}/#/${id}/chat`, { waitUntil: 'networkidle' });
+      await hp.waitForTimeout(1200);
+      await hp.fill('.chat-input', question);
+      await hp.keyboard.press('Enter');
+      await hp.waitForTimeout(2600);
+      const last = (await hp.$$eval('.chat-msg.bot', (n) => n.map((x) => x.innerText))).pop() || '';
+      if (!expect.test(last)) fail('chat', `"${question}" -> ${last.slice(0, 70)}`);
+      else ok('chat', `${question} -> ${last.split('\n')[0].slice(0, 62)}`);
+    }
+    // An off-topic question must be refused, not answered with a guess.
+    await hp.goto(`${BASE}/#/mlb/chat`, { waitUntil: 'networkidle' });
+    await hp.waitForTimeout(1000);
+    await hp.fill('.chat-input', 'what is the weather today');
+    await hp.keyboard.press('Enter');
+    await hp.waitForTimeout(1500);
+    const miss = (await hp.$$eval('.chat-msg.bot', (n) => n.map((x) => x.innerText))).pop() || '';
+    if (!/Ask an? MLB question/i.test(miss)) fail('chat', `off-topic answered with: ${miss.slice(0, 70)}`);
+    else ok('chat', 'off-topic question is refused, not guessed');
+    if (errs.length) fail('health', errs.join('|'));
+    await ctx.close();
+  }
+
   // -------------------------------------------------------------- layout
   console.log('\n— layout —');
   const ROUTES = ['#/player/bondsba01', '#/player/riverma01', '#/player/ohtansh01',
                   '#/career', '#/season', '#/year/1998', '#/live', '#/compare/bondsba01,ruthba01',
                   '#/scoring', '#/about', '#/contact', '#/privacy', '#/terms',
-                  '#/pricing', '#/nba/player', '#/nba/scoring', '#/nfl/career', '#/nfl/scoring'];
+                  '#/pricing', '#/nba/player', '#/nba/scoring', '#/nfl/career', '#/nfl/scoring',
+                  '#/health', '#/mlb/chat', '#/nfl/chat', '#/nba/career', '#/settings'];
   const DEVICES = [
     [360, 800, 'android-small', true],   // Galaxy S-class
     [390, 844, 'iphone', true],          // iPhone 14/15

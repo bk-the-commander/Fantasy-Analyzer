@@ -99,58 +99,27 @@ const SPORTS = {
     status: 'live', dataDir: 'data',
     tagline: 'Every MLB player since 1871, scored in your league’s points.',
     searchPlaceholder: 'Search any player, 1871–present…',
+    emoji: '⚾',
     // Scoring and roster come from meta.json, which the data build writes
     // straight out of fantasy_baseball/config.py.
   },
 
   nba: {
     id: 'nba', short: 'NBA', league: 'NBA', name: 'Basketball',
-    status: 'placeholder', dataDir: 'data-nba',
+    status: 'live', generic: true, dataDir: 'data-nba',
     tagline: 'Every NBA player, scored in your league’s points.',
     searchPlaceholder: 'Search any NBA player…',
-    league_settings: { size: 12, type: 'H2H Points' },
-    /* PLACEHOLDER SETTINGS -- replace with the real league's values. */
-    scoringGroups: [{
-      title: 'Scoring',
-      rules: {
-        'Point': 1, 'Rebound': 1.2, 'Assist': 1.5, 'Steal': 3, 'Block': 3,
-        'Turnover': -1, 'Three-pointer made': 0.5, 'Field goal made': 1,
-        'Field goal missed': -0.5, 'Free throw made': 1, 'Free throw missed': -0.5,
-        'Double-double': 1.5, 'Triple-double': 3,
-      },
-    }],
-    roster: ['PG', 'SG', 'G', 'SF', 'PF', 'F', 'C', 'C', 'Util', 'Util',
-             'BN', 'BN', 'BN', 'IL'],
-    dataNote: 'Historical NBA statistics are available from the public ' +
-      'stats.nba.com endpoints and from Basketball Reference’s downloadable ' +
-      'tables. Neither is wired up yet.',
+
+    emoji: '🏀',
   },
 
   nfl: {
     id: 'nfl', short: 'NFL', league: 'NFL', name: 'Football',
-    status: 'placeholder', dataDir: 'data-nfl',
+    status: 'live', generic: true, dataDir: 'data-nfl',
     tagline: 'Every NFL player, scored in your league’s points.',
     searchPlaceholder: 'Search any NFL player…',
-    league_settings: { size: 12, type: 'H2H Points' },
-    /* PLACEHOLDER SETTINGS -- replace with the real league's values. */
-    scoringGroups: [
-      { title: 'Passing', rules: {
-        'Passing yard': 0.04, 'Passing touchdown': 4, 'Interception thrown': -2,
-        '2-point conversion pass': 2, '300+ yard game': 1 } },
-      { title: 'Rushing & receiving', rules: {
-        'Rushing yard': 0.1, 'Rushing touchdown': 6, 'Reception': 0.5,
-        'Receiving yard': 0.1, 'Receiving touchdown': 6,
-        '100+ yard game': 1, '2-point conversion': 2, 'Fumble lost': -2 } },
-      { title: 'Kicking & defence', rules: {
-        'PAT made': 1, 'FG 0-39 yd': 3, 'FG 40-49 yd': 4, 'FG 50+ yd': 5,
-        'FG missed': -1, 'Sack': 1, 'Defensive interception': 2,
-        'Fumble recovery': 2, 'Defensive touchdown': 6, 'Safety': 2,
-        'Return touchdown': 6 } },
-    ],
-    roster: ['QB', 'RB', 'RB', 'WR', 'WR', 'WR', 'TE', 'W/R/T', 'K', 'DEF',
-             'BN', 'BN', 'BN', 'BN', 'BN', 'IR'],
-    dataNote: 'Historical NFL statistics are available from nflverse’s public ' +
-      'release files and from Pro Football Reference. Neither is wired up yet.',
+
+    emoji: '🏈',
   },
 };
 
@@ -246,6 +215,7 @@ const state = {
   compare: [],        // player ids pinned in the Compare view
   view: null,
   sport: 'mlb',       // active league; the URL is the source of truth
+  sports: {},         // id -> {meta, index, pct, norm, idPos, pidPos}
 };
 
 // ------------------------------------------------------------------ helpers
@@ -298,21 +268,66 @@ const norm = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 const EMBEDDED = typeof window !== 'undefined' ? (window.__DSA_DATA__ || null) : null;
 
 async function getJSON(path) {
-  if (EMBEDDED && EMBEDDED[path]) return EMBEDDED[path];
+  if (EMBEDDED) {
+    const scoped = EMBEDDED[`${state.sport}:${path}`];
+    if (scoped) return scoped;
+    if (state.sport === 'mlb' && EMBEDDED[path]) return EMBEDDED[path];
+    if (EMBEDDED[`${state.sport}:__missing`]) throw new Error('not in this preview');
+  }
   const res = await fetch(`${DATA_DIRS[state.sport] || 'data'}/${path}`);
   if (!res.ok) throw new Error(`${path}: ${res.status}`);
   return res.json();
 }
 
+/** Load a league's index and metadata once, then keep it. */
+async function loadSportData(id) {
+  if (state.sports[id]) return state.sports[id];
+  const previous = state.sport;
+  state.sport = id;                       // getJSON reads the directory from this
+  try {
+    const [meta, index, pct] = await Promise.all([
+      getJSON('meta.json'), getJSON('search.json'), getJSON('percentiles.json'),
+    ]);
+    const entry = {
+      meta, index, pct,
+      norm: index.names.map(norm),
+      idPos: new Map(index.ids.map((n, i) => [n, i])),
+      pidPos: new Map((index.pid || []).map((pid, i) => [pid, i])),
+    };
+    state.sports[id] = entry;
+    return entry;
+  } finally {
+    state.sport = previous;
+  }
+}
+
+/** Point the shared lookups at a league's data. */
+function useSportData(id) {
+  const entry = state.sports[id];
+  if (!entry) return false;
+  state.meta = entry.meta;
+  state.index = entry.index;
+  state.pct = entry.pct;
+  state.norm = entry.norm;
+  idPos = entry.idPos;
+  pidPos = entry.pidPos;
+  return true;
+}
+
 async function getShard(id) {
-  if (EMBEDDED) return EMBEDDED.players[String(id)] || null;
+  if (EMBEDDED && state.sport === 'mlb') return EMBEDDED.players[String(id)] || null;
+  if (EMBEDDED && EMBEDDED[`${state.sport}:players`]) {
+    return EMBEDDED[`${state.sport}:players`][String(id)] || null;
+  }
   const s = id % state.meta.shards;
   if (!state.shards.has(s)) state.shards.set(s, await getJSON(`players/${s}.json`));
   return state.shards.get(s)[String(id)];
 }
 
-async function getBoard(name) {
-  if (!state.boards.has(name)) {
+async function getBoard(rawName) {
+  const name = rawName;
+  const key = `${state.sport}:${name}`;
+  if (!state.boards.has(key)) {
     const raw = await getJSON(`${name}.json`);
     // Re-shape packed rows into objects once, up front: every view sorts and
     // filters these repeatedly, and index lookups by name are far easier to
@@ -323,15 +338,15 @@ async function getBoard(name) {
       o.name = nameOf(o.id);
       return o;
     });
-    const group = name.includes('batting') ? 'batting' : 'pitching';
+    const group = name.includes('pitching') ? 'pitching' : 'batting';
     applyScoring(rows, group, name.includes('career'));
-    state.boards.set(name, rows);
+    state.boards.set(key, rows);
   }
-  return state.boards.get(name);
+  return state.boards.get(key);
 }
 
 async function rankMap(board, key = 'pts') {
-  const cacheKey = `${board}:${key}`;
+  const cacheKey = `${state.sport}:${board}:${key}`;
   if (!state.ranks.has(cacheKey)) {
     const rows = await getBoard(board);
     const sorted = [...rows].sort((a, b) => b[key] - a[key]);
@@ -367,8 +382,11 @@ function resolveId(key) {
   return /^\d+$/.test(String(key)) ? Number(key) : null;
 }
 
-/** Player page URL. Uses the stable id so shared links survive a rebuild. */
-const playerHref = (id, extra = '') => `#/player/${pidOf(id)}${extra}`;
+/** Player page URL. Carries the league, because a player id is only unique
+ *  within its own dataset -- without it an NBA link resolves against the
+ *  baseball index and opens whoever happens to sit at that position. Uses the
+ *  source's stable id so shared links survive a rebuild. */
+const playerHref = (id, extra = '') => `#/${state.sport}/player/${pidOf(id)}${extra}`;
 
 const posOf = (id) => idPos.get(id);
 const indexField = (id, field) => {
@@ -444,9 +462,13 @@ function initTheme() {
 
 // ------------------------------------------------------- sport + tier chrome
 
-function applySport(id) {
+async function applySport(id) {
   state.sport = SPORTS[id] ? id : 'mlb';
   const s = sport();
+  if (s.status === 'live') {
+    try { await loadSportData(s.id); useSportData(s.id); }
+    catch (err) { console.error(`[${s.id}] data failed to load`, err); }
+  }
   document.documentElement.setAttribute('data-sport', s.id);
 
   const search = $('#globalSearch');
@@ -476,7 +498,7 @@ function initSportSwitch() {
     class: state.sport === id ? 'on' : '',
     title: `${SPORTS[id].league} — ${SPORTS[id].name}`,
     onclick: () => go(`#/${id}/player`),
-  }, SPORTS[id].short,
+  }, el('span', { class: 'ball' }, SPORTS[id].emoji), SPORTS[id].short,
      SPORTS[id].status === 'placeholder' ? el('span', { class: 'soon' }, 'soon') : null)));
 }
 
@@ -2462,6 +2484,40 @@ async function viewLive() {
 
 /** Scoring page for a sport whose settings are configured but whose data is
  *  not built yet. The rules below are placeholders, and say so. */
+function viewGenericScoring() {
+  const s = sport();
+  const m = state.meta;
+  const weights = genWeights();
+  return app().replaceChildren(
+    el('div', { class: 'view-head' },
+      el('h1', {}, `${s.league} League Scoring`),
+      el('p', {}, `${m.league.size}-team ${m.league.type}. These are the default ` +
+        'weights every page opens with — change them in My League and everything ' +
+        'here recomputes.')),
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' },
+        el('h2', {}, 'Scoring categories'),
+        el('span', { class: 'hint' },
+          genCustom() ? 'showing your custom weights' : 'league defaults')),
+      el('div', { class: 'rules' },
+        el('div', {}, el('div', { class: 'rule-list' },
+          Object.entries(weights).map(([cat, w]) => el('div', { class: 'rule' },
+            el('span', {}, cat),
+            el('span', { class: `w${w < 0 ? ' neg' : ''}` },
+              w > 0 ? `+${w}` : String(w))))))),
+      el('div', { class: 'settings-actions' },
+        el('a', { class: 'btn primary', href: '#/settings' }, 'Edit these weights')),
+      watermark()),
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' }, el('h2', {}, 'Roster')),
+      el('div', { class: 'roster-slots' },
+        m.league.roster.map((slot) => el('span', { class: 'slot' }, slot)))),
+    el('div', { class: 'note', html:
+      `<b>Coverage.</b> ${m.coverage_note} Source: ${m.source}. ` +
+      `${num(m.players)} players and ${num(m.player_seasons)} player-seasons, ` +
+      `${m.seasons[0]}–${m.seasons[1]}, built ${m.built}.` }));
+}
+
 function viewScoringPlaceholder() {
   const s = sport();
   app().replaceChildren(
@@ -2693,6 +2749,398 @@ function viewContact() {
         watermark(true))));
 }
 
+// -------------------------------------------------- generic league renderer
+//
+// Baseball earns bespoke pages: two disjoint stat groups, a century and a half
+// of context, and metrics that only mean anything in that sport. Football and
+// basketball share one shape -- a single stat line per season -- so they share
+// one renderer driven entirely by the column names in their meta.json. Adding
+// a fourth league is a dataset, not another view layer.
+
+const GEN = { YEAR: 0, TEAM: 1, POS: 2, G: 3 };   // fixed head of every row
+const genStats = () => state.meta.stat_cols || [];
+const genStatIndex = (name) => 4 + genStats().indexOf(name);
+const genPts = () => 4 + genStats().length;
+const genPlus = () => genPts() + 1;
+
+/** Reader over a generic season row, by category name. */
+function genRead(row) {
+  const stats = genStats();
+  return (key) => {
+    if (key === 'G') return row[GEN.G] || 0;
+    const i = stats.indexOf(key);
+    return i < 0 ? 0 : (row[4 + i] || 0);
+  };
+}
+
+/** Reader over a generic career array (no year/team/pos head). */
+function genReadCareer(arr) {
+  const stats = genStats();
+  return (key) => {
+    if (key === 'G') return arr[0] || 0;
+    const i = stats.indexOf(key);
+    return i < 0 ? 0 : (arr[1 + i] || 0);
+  };
+}
+
+function genScore(read, weights) {
+  let points = 0;
+  for (const [cat, w] of Object.entries(weights)) points += w * read(cat);
+  return points;
+}
+
+const genWeights = () => {
+  const custom = customScoring();
+  const base = { ...(state.meta.scoring || {}) };
+  return custom && custom[state.sport] ? { ...base, ...custom[state.sport] } : base;
+};
+const genCustom = () => {
+  const custom = customScoring();
+  return !!(custom && custom[state.sport]);
+};
+
+async function viewGenericPlayer(key) {
+  const id = resolveId(key);
+  if (!id) {
+    const s = sport();
+    return app().replaceChildren(
+      el('div', { class: 'view-head' },
+        el('h1', {}, `${s.league} Player Lookup`),
+        el('p', {}, s.tagline)),
+      el('div', { class: 'panel' }, el('div', { class: 'empty-state' },
+        el('h3', {}, 'Start typing a name'),
+        el('div', {}, s.id === 'nfl' ? 'Try Brady, Manning, Peterson, Gronkowski…'
+                                     : 'Try LeBron, Curry, Duncan, Nowitzki…'))),
+      genericSuggestions());
+  }
+
+  const p = await getShard(id);
+  if (!p) {
+    return app().replaceChildren(el('div', { class: 'empty-state' },
+      el('h3', {}, 'Not in this dataset'),
+      el('div', {}, `${sport().league} coverage runs ` +
+        `${state.meta.seasons[0]}–${state.meta.seasons[1]}. ` +
+        (EMBEDDED ? 'This offline preview also carries a subset of players.' : ''))));
+  }
+
+  const weights = genWeights();
+  const stats = genStats();
+  const rows = p.s || [];
+  const careerRead = genReadCareer(p.c || []);
+  const careerPts = genScore(careerRead, weights);
+  const games = careerRead('G');
+  const ranks = await rankMap('lb_career');
+
+  const hero = el('div', { class: 'player-hero' },
+    el('h1', { class: 'ph-name' }, p.n),
+    el('div', { class: 'ph-badges' },
+      p.pos ? el('span', { class: 'badge' }, p.pos) : null,
+      el('span', { class: 'badge ghost' }, `${p.yrs[0]}–${p.yrs[1]}`),
+      el('span', { class: 'badge' }, `${p.s.length} season${p.s.length === 1 ? '' : 's'}`)),
+    el('div', { class: 'ph-bio', html:
+      `<b>${sport().league}</b> · league points under ` +
+      (genCustom() ? 'your custom scoring' : 'the default scoring') }));
+
+  const card = el('div', { class: 'panel' }, hero, watermark());
+  const container = el('div', {}, card);
+  app().replaceChildren(container);
+
+  const rank = ranks.get(id);
+  const topStats = stats.slice(0, 3);
+  card.append(el('div', { class: 'panel-head' },
+    el('h2', {}, 'Career — league points'),
+    el('span', { class: 'hint' }, `${p.yrs[0]}–${p.yrs[1]} · ${num(games)} games`)));
+  card.append(el('div', { class: 'tiles' },
+    tile('Fantasy points', num(careerPts, 0),
+      rank ? `<span class="rank">${ordinal(rank)}</span> in this dataset` : null, true),
+    tile('Points / game', num(games ? careerPts / games : 0, 2), `${num(games)} G`),
+    tile('Seasons', num(p.s.length), `${p.yrs[0]}–${p.yrs[1]}`),
+    topStats.map((s2) => tile(s2, num(careerRead(s2), 0)))));
+
+  if (!genCustom() && state.pct?.career) {
+    const railsEl = el('div', { class: 'rails' },
+      el('div', { class: 'rail-legend' },
+        el('span', {}, 'Worse'), el('span', {}, 'Percentile rank'), el('span', {}, 'Better')),
+      rail('Points', careerPts, pctile('career', 'pts', careerPts), num(careerPts, 0)),
+      rail('Points/G', games ? careerPts / games : 0,
+        pctile('career', 'ptsg', games ? careerPts / games : 0),
+        num(games ? careerPts / games : 0, 2)),
+      el('div', { class: 'rails-note' },
+        `Percentiles vs. every ${sport().league} player in the dataset.`));
+    card.append(railsEl);
+  }
+
+  // --- chart ------------------------------------------------------------
+  const seasons = rows.map((r) => ({
+    year: r[GEN.YEAR], bat: genScore(genRead(r), weights), pit: 0, team: r[GEN.TEAM],
+  })).sort((a, b) => a.year - b.year);
+  container.append(el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, 'Fantasy points by season'),
+      el('span', { class: 'hint' }, 'Hover a bar for the detail')),
+    seasonChart(seasons, () => {}, null)));
+
+  // --- season log -------------------------------------------------------
+  const logRows = rows.map((r) => {
+    const read = genRead(r);
+    const o = { year: r[GEN.YEAR], team: r[GEN.TEAM], G: read('G') };
+    for (const s2 of stats) o[s2] = read(s2);
+    o.pts = genScore(read, weights);
+    o.ptsg = o.G ? o.pts / o.G : 0;
+    o.plus = genCustom() ? null : r[genPlus()];
+    return o;
+  });
+  const totals = { __total: true, year: 'Career', team: '', G: games, pts: careerPts,
+                   ptsg: games ? careerPts / games : 0, plus: null };
+  for (const s2 of stats) totals[s2] = careerRead(s2);
+  logRows.push(totals);
+
+  const maxPts = Math.max(...logRows.filter((r) => !r.__total).map((r) => r.pts), 1);
+  const cols = [
+    { key: 'year', label: 'Year', cls: 'txt' },
+    { key: 'team', label: 'Tm', cls: 'txt' },
+    { key: 'G', label: 'G', get: (r) => num(r.G, r.G % 1 ? 1 : 0) },
+    ...stats.map((s2) => ({ key: s2, label: s2,
+      get: (r) => num(r[s2], Math.abs(r[s2]) < 100 && r[s2] % 1 ? 1 : 0) })),
+    { key: 'plus', label: 'PTS+', title: 'Points per game vs. the league average that season (100)',
+      get: (r) => (r.plus ? num(r.plus, 0) : '—') },
+    { key: 'ptsg', label: 'PTS/G', get: (r) => num(r.ptsg, 2) },
+    { key: 'pts', label: 'Points', cls: 'pts-cell', get: (r) => num(r.pts, 0),
+      heat: (v) => Math.max(0, v / maxPts) },
+  ];
+  container.append(el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, 'Season by season'),
+      el('span', { class: 'hint' }, 'Click any column header to sort')),
+    statTable(logRows, cols, { sortKey: null }),
+    watermark()));
+
+  container.append(el('div', { class: 'note', html:
+    `<b>Coverage.</b> ${state.meta.coverage_note} Source: ${state.meta.source}.` }));
+}
+
+function genericSuggestions() {
+  const { ids, names, bp, y0, y1 } = state.index;
+  const order = ids.map((id, i) => i).sort((a, b) => bp[b] - bp[a]).slice(0, 8);
+  return el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' }, el('h2', {}, 'Top careers in this dataset')),
+    el('div', { class: 'compare-grid' },
+      order.map((i) => el('a', { class: 'cmp-card', href: playerHref(ids[i]) },
+        el('h3', {}, names[i]),
+        el('div', { class: 'yrs' }, `${y0[i]}–${y1[i]}`),
+        el('div', { class: 'cmp-row best' },
+          el('span', {}, 'Career points'), el('span', {}, num(bp[i], 0)))))));
+}
+
+async function viewGenericBoard(kind) {
+  const isCareer = kind === 'career';
+  const s = sport();
+  const head = el('div', { class: 'view-head' },
+    el('h1', {}, `${s.league} ${isCareer ? 'Career' : 'Season'} Leaders`),
+    el('p', {}, isCareer
+      ? `Every ${s.league} career in the dataset, ranked by fantasy points under ${genCustom() ? 'your scoring' : 'the default scoring'}.`
+      : `The best individual ${s.league} seasons in the dataset. Sort by any column.`));
+
+  const body = el('div', {});
+  const filters = el('div', { class: 'filters' });
+  const panel = el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' }, el('h2', {}, 'Leaderboard'),
+      el('span', { class: 'hint' }, 'Click a name for the full player page')),
+    filters, body, watermark());
+  app().replaceChildren(head, panel);
+
+  const raw = await getBoard(isCareer ? 'lb_career' : 'lb_season');
+  const weights = genWeights();
+  const stats = genStats();
+  const opts = { q: '', minG: 0, pos: '' };
+
+  const scored = raw.map((r) => {
+    const read = (k) => Number(r[k]) || 0;
+    const pts = genCustom() ? genScore(read, weights) : r.pts;
+    return { ...r, pts, ptsg: r.G ? pts / r.G : 0 };
+  }).sort((a, b) => b.pts - a.pts);
+
+  const positions = [...new Set(raw.map((r) => r.pos).filter(Boolean))].sort();
+
+  const draw = () => {
+    const q = norm(opts.q);
+    const filtered = scored.filter((r) =>
+      (!q || norm(r.name).includes(q)) &&
+      (!opts.minG || r.G >= opts.minG) &&
+      (!opts.pos || r.pos === opts.pos));
+    const shown = limitRows(filtered, FREE.boardRows);
+    const maxPts = Math.max(...shown.map((r) => r.pts), 1);
+
+    const cols = [
+      { key: 'name', label: 'Player', cls: 'txt', get: playerLink },
+      isCareer ? { key: 'year0', label: 'From' } : { key: 'year', label: 'Year' },
+      isCareer ? { key: 'year1', label: 'To' } : { key: 'team', label: 'Tm', cls: 'txt' },
+      isCareer ? { key: 'seasons', label: 'Yrs' }
+               : { key: 'pos', label: 'Pos', cls: 'txt' },
+      { key: 'G', label: 'G', get: (r) => num(r.G, r.G % 1 ? 1 : 0) },
+      ...stats.slice(0, 8).map((s2) => ({ key: s2, label: s2,
+        get: (r) => num(r[s2], Math.abs(r[s2]) < 100 && r[s2] % 1 ? 1 : 0) })),
+      !isCareer && !genCustom()
+        ? { key: 'ptsplus', label: 'PTS+', get: (r) => (r.ptsplus ? num(r.ptsplus, 0) : '—') }
+        : null,
+      { key: 'ptsg', label: 'PTS/G', get: (r) => num(r.ptsg, 2) },
+      { key: 'pts', label: 'Points', cls: 'pts-cell', get: (r) => num(r.pts, 0),
+        heat: (v) => Math.max(0, v / maxPts) },
+    ].filter(Boolean);
+
+    body.replaceChildren(
+      el('div', { class: 'panel-head', style: 'border-top:1px solid var(--border)' },
+        el('h2', {}, `${num(filtered.length)} ${isCareer ? 'players' : 'seasons'}`),
+        el('span', { class: 'hint' },
+          `${state.meta.seasons[0]}–${state.meta.seasons[1]}` +
+          (shown.length < filtered.length ? ` · showing the top ${num(shown.length)}` : '')),
+        el('div', { style: 'margin-top:8px' },
+          exportButton(filtered, cols.filter((c) => c.key !== 'name')
+            .map((c) => ({ key: c.key, label: c.label }))
+            .concat([{ key: 'name', label: 'Player' }]),
+            `${state.sport}-${kind}.csv`))),
+      statTable(shown, cols, { rank: true, sortKey: 'pts', limit: 200, page: 200 }),
+      shown.length < filtered.length
+        ? upgradeBar(`${num(filtered.length - shown.length)} more rows on Pro`,
+            `The free plan shows the top ${num(FREE.boardRows)}.`)
+        : null);
+  };
+
+  filters.append(
+    positions.length ? el('div', { class: 'field' }, el('label', {}, 'Position'),
+      el('select', { onchange: (e) => { opts.pos = e.target.value; draw(); } },
+        el('option', { value: '' }, 'Any'),
+        positions.map((pos) => el('option', { value: pos }, pos)))) : null,
+    el('div', { class: 'field' }, el('label', {}, 'Min games'),
+      el('input', { type: 'number', value: 0, min: 0, step: 1,
+        oninput: (e) => { opts.minG = Number(e.target.value) || 0; draw(); } })),
+    el('div', { class: 'field' }, el('label', {}, 'Filter by name'),
+      el('input', { type: 'text', placeholder: 'e.g. Brady',
+        oninput: (e) => { opts.q = e.target.value; draw(); } })));
+  draw();
+}
+
+async function viewGenericYear(yearArg) {
+  const [lo, hi] = state.meta.seasons;
+  const year = Number(yearArg) || hi;
+  const s = sport();
+  const picker = el('select', { onchange: (e) => go(`#/${s.id}/year/${e.target.value}`) },
+    Array.from({ length: hi - lo + 1 }, (_, i) => hi - i)
+      .map((y) => el('option', { value: y, selected: y === year }, y)));
+
+  const wrap = el('div', {});
+  app().replaceChildren(
+    el('div', { class: 'view-head' },
+      el('h1', {}, `${s.league} Year Explorer`),
+      el('p', {}, `Any season from ${lo} to ${hi}, scored your way.`)),
+    el('div', { class: 'panel' },
+      el('div', { class: 'filters' },
+        el('div', { class: 'field' }, el('label', {}, 'Season'), picker)),
+      wrap, watermark()));
+
+  const raw = await getBoard('lb_season');
+  const weights = genWeights();
+  const stats = genStats();
+  const rows = raw.filter((r) => r.year === year).map((r) => {
+    const read = (k) => Number(r[k]) || 0;
+    const pts = genCustom() ? genScore(read, weights) : r.pts;
+    return { ...r, pts, ptsg: r.G ? pts / r.G : 0 };
+  }).sort((a, b) => b.pts - a.pts);
+  const shown = limitRows(rows, FREE.yearRows);
+  const maxPts = Math.max(...shown.map((r) => r.pts), 1);
+
+  wrap.replaceChildren(
+    el('div', { class: 'panel-head', style: 'border-top:1px solid var(--border)' },
+      el('h2', {}, `${year} leaders`),
+      el('span', { class: 'hint' }, `${num(rows.length)} qualifying players`)),
+    rows.length ? statTable(shown, [
+      { key: 'name', label: 'Player', cls: 'txt', get: playerLink },
+      { key: 'team', label: 'Tm', cls: 'txt' },
+      { key: 'pos', label: 'Pos', cls: 'txt' },
+      { key: 'G', label: 'G', get: (r) => num(r.G, r.G % 1 ? 1 : 0) },
+      ...stats.slice(0, 8).map((s2) => ({ key: s2, label: s2,
+        get: (r) => num(r[s2], Math.abs(r[s2]) < 100 && r[s2] % 1 ? 1 : 0) })),
+      { key: 'ptsg', label: 'PTS/G', get: (r) => num(r.ptsg, 2) },
+      { key: 'pts', label: 'Points', cls: 'pts-cell', get: (r) => num(r.pts, 0),
+        heat: (v) => Math.max(0, v / maxPts) },
+    ], { rank: true, sortKey: 'pts', limit: 200, page: 200 })
+      : el('div', { class: 'empty-state' }, 'No players for that season.'),
+    shown.length < rows.length
+      ? upgradeBar(`${num(rows.length - shown.length)} more from ${year} on Pro`, null)
+      : null);
+}
+
+function viewGenericSettings() {
+  const s = sport();
+  const defaults = { ...(state.meta.scoring || {}) };
+  const draft = { ...genWeights() };
+  const preview = el('div', { class: 'settings-preview' });
+
+  const refresh = async () => {
+    preview.replaceChildren(el('div', { class: 'boot-spinner' }));
+    const rows = await getBoard('lb_career');
+    const top = rows.map((r) => ({
+      name: r.name, id: r.id,
+      pts: genScore((k) => Number(r[k]) || 0, draft),
+    })).sort((a, b) => b.pts - a.pts).slice(0, 5);
+    preview.replaceChildren(
+      el('div', { class: 'preview-head' }, `${s.league} career leaders under these settings`),
+      el('ol', { class: 'preview-list' }, top.map((r) => el('li', {},
+        el('a', { class: 'plink', href: playerHref(r.id) }, r.name),
+        el('span', {}, num(r.pts, 0))))));
+  };
+
+  const grid = el('div', { class: 'settings-grid' },
+    Object.keys(defaults).map((cat) => {
+      const wrap = el('div', { class: `setting${draft[cat] !== defaults[cat] ? ' changed' : ''}` },
+        el('label', { for: `g-${cat}` }, cat),
+        el('input', {
+          id: `g-${cat}`, type: 'number', step: '0.01', inputmode: 'decimal',
+          value: String(draft[cat]),
+          oninput: (e) => {
+            const v = Number(e.target.value);
+            draft[cat] = Number.isFinite(v) ? v : 0;
+            wrap.classList.toggle('changed', draft[cat] !== defaults[cat]);
+            clearTimeout(wrap._t);
+            wrap._t = setTimeout(refresh, 350);
+          },
+        }));
+      return wrap;
+    }));
+
+  const save = () => {
+    const all = customScoring() || {};
+    all[s.id] = draft;
+    saveScoring(all);
+  };
+  const reset = () => {
+    const all = customScoring() || {};
+    delete all[s.id];
+    if (Object.keys(all).length) saveScoring(all); else resetScoring();
+  };
+
+  app().replaceChildren(
+    el('div', { class: 'view-head' },
+      el('h1', {}, `Your ${s.league} League Settings`),
+      el('p', {}, 'Set your own weights and every ' + s.league +
+        ' page recomputes to what those players would have been worth to you.')),
+    genCustom() ? el('div', { class: 'note', html:
+      `<b>Custom ${s.league} scoring is on.</b>` }) : null,
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' },
+        el('h2', {}, 'Scoring'),
+        el('span', { class: 'hint' }, 'Previews live · nothing saves until you apply')),
+      el('div', { class: 'rules' }, el('div', {}, grid)),
+      el('div', { class: 'settings-actions' },
+        el('button', { class: 'btn primary', onclick: save }, 'Apply to the whole site'),
+        el('button', { class: 'btn', onclick: reset }, 'Reset to defaults')),
+      watermark()),
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' }, el('h2', {}, 'Live preview')),
+      preview));
+  refresh();
+}
+
 // ------------------------------------------------------- league settings
 //
 // The reason to use this site rather than a record book: put your own league's
@@ -2700,6 +3148,7 @@ function viewContact() {
 // have been worth to you.
 
 function viewSettings() {
+  if (sport().generic) return viewGenericSettings();
   const defaults = defaultScoring();
   const active = activeScoring();
   const draft = { batting: { ...active.batting }, pitching: { ...active.pitching } };
@@ -2893,6 +3342,388 @@ function viewPricing() {
       'paywall is where that licence starts to bite.' }));
 
   mount(app(), adSlot('inline'));
+}
+
+// ------------------------------------------------------------ health check
+//
+// The owner's view of the machine: what every tab is, whether it is actually
+// working, and what the next piece of work on it would be. Deliberately
+// opinionated -- a status page that says "OK" about everything is useless.
+
+const HEALTH = [
+  // [tab, route, status, what it is, what it needs next]
+  ['Player Lookup', '#/player', 'live',
+   'Search any player and see their career scored in league points, with ' +
+   'percentile rails, a points-by-season chart and the full stat log.',
+   'Baseball is complete. Football and basketball use the generic renderer, ' +
+   'which has no profile, projection or advanced-metric panels yet.'],
+  ['Career Leaders', '#/career', 'live',
+   'Every career ranked by fantasy points, filterable and sortable.',
+   'Nothing blocking. Adding league-relative filters (division, era) would help.'],
+  ['Season Leaders', '#/season', 'live',
+   'The best individual seasons, with the era-adjusted PTS+ rating.',
+   'Nothing blocking.'],
+  ['Year Explorer', '#/year', 'live',
+   'Any single season, scored your way.',
+   'Nothing blocking.'],
+  ['This Season', '#/live', 'partial',
+   'Current-season totals fetched live from the MLB Stats API in the browser.',
+   'Baseball only, and never verified against the real API from the build ' +
+   'environment (egress blocked). First real page load is the true test. ' +
+   'Football and basketball have no live feed wired up.'],
+  ['Compare', '#/compare', 'partial',
+   'Careers side by side with the best value per row highlighted.',
+   'Reads the baseball record shape; needs the generic path for NFL/NBA.'],
+  ['My League', '#/settings', 'live',
+   'The product: set your own scoring weights and every page recomputes from ' +
+   'raw counting stats.',
+   'Works for all three leagues. Roster-slot editing is not built — only ' +
+   'scoring weights. Settings live in this browser, not an account.'],
+  ['Trends', '#/trends', 'planned',
+   'Daily most-added/dropped, rolling hot/cold under your scoring, buy-low ' +
+   'candidates, waiver fit.',
+   'Not built. Needs a scheduled backend job to collect platform trend data; ' +
+   'static hosting cannot poll on a timer.'],
+  ['Ask', '#/ask', 'planned',
+   'Natural-language questions over the dataset.',
+   'A deterministic query engine is live at #/chat and answers a fixed set of ' +
+   'question shapes exactly. A general language model needs a backend to hold ' +
+   'an API key — a key shipped to the browser is a key given away.'],
+  ['Chat', '#/chat', 'live',
+   'Ask a question in plain English and get an answer computed from the data ' +
+   'on this site, with a link to the page it came from.',
+   'Rule-based, not a language model: it recognises a defined set of question ' +
+   'shapes and says so when a question falls outside them. Widening it means ' +
+   'adding intents, which is cheap.'],
+  ['Plans', '#/pricing', 'demo',
+   'Free vs Pro, with a switch to preview both.',
+   'The paywall is browser-side: it decides what the interface offers, not ' +
+   'what someone determined can reach. Real paid access needs the Pro data ' +
+   'behind an authenticated endpoint.'],
+  ['Admin', '#/admin', 'demo',
+   'Owner console: plan override, feature flags, dataset facts.',
+   'Passphrase gate is convenience, not security. Same backend unlocks it ' +
+   'properly.'],
+  ['About / Contact / Privacy / Terms', '#/about', 'live',
+   'Standard site pages generated from the SITE config block.',
+   'LinkedIn and Facebook URLs are still blank. Contact form endpoint unset, ' +
+   'so the page publishes an email address instead.'],
+];
+
+const STATUS_META = {
+  live:    ['OK', 'Working end to end'],
+  partial: ['PARTIAL', 'Works, with a stated gap'],
+  planned: ['PLANNED', 'Described, not built'],
+  demo:    ['DEMO', 'Real UI, not enforceable'],
+};
+
+async function viewHealth() {
+  const rows = [];
+  const started = performance.now();
+
+  // Probe each league's dataset the same way a visitor's browser would.
+  for (const id of SPORT_IDS) {
+    const s = SPORTS[id];
+    const t0 = performance.now();
+    let entry = null, error = null;
+    try { entry = await loadSportData(id); }
+    catch (err) { error = err.message || String(err); }
+    rows.push({
+      league: s.league, emoji: s.emoji, ms: Math.round(performance.now() - t0),
+      ok: !!entry, error,
+      meta: entry?.meta || null,
+    });
+  }
+
+  const datasetPanel = el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, 'Datasets'),
+      el('span', { class: 'hint' }, 'Loaded live, in this browser, just now')),
+    el('div', { class: 'admin-list' },
+      rows.map((r) => el('div', { class: 'admin-row' },
+        el('div', {},
+          el('b', {}, `${r.emoji} ${r.league}`),
+          el('span', { class: 'hint' }, r.ok
+            ? `${num(r.meta.players)} players · ${num(r.meta.player_seasons || r.meta.batting_seasons)} seasons · ` +
+              `${r.meta.seasons[0]}–${r.meta.seasons[1]} · built ${r.meta.built}`
+            : `failed: ${r.error}`)),
+        el('span', { class: `pill ${r.ok ? 'on' : 'off'}` },
+          r.ok ? `${r.ms} ms` : 'ERROR')))),
+    el('div', { class: 'note', html:
+      rows.filter((r) => r.ok).map((r) =>
+        `<b>${r.league}:</b> ${r.meta.coverage_note || 'Full historical coverage.'}`
+      ).join('<br>') }));
+
+  const tabPanel = el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, 'Every tab: what it is, how it runs, what it needs'),
+      el('span', { class: 'hint' }, `${HEALTH.length} surfaces`)),
+    el('div', { class: 'health-list' },
+      HEALTH.map(([name, route, status, what, next]) => {
+        const [label, blurb] = STATUS_META[status];
+        return el('div', { class: `health-item ${status}` },
+          el('div', { class: 'health-head' },
+            el('a', { class: 'health-name', href: route }, name),
+            el('span', { class: `pill status-${status}`, title: blurb }, label)),
+          el('p', { class: 'health-what' }, what),
+          el('div', { class: 'health-next' }, el('b', {}, 'Next: '), next));
+      })));
+
+  const counts = HEALTH.reduce((a, [, , st]) => { a[st] = (a[st] || 0) + 1; return a; }, {});
+
+  app().replaceChildren(
+    el('div', { class: 'view-head' },
+      el('h1', {}, 'System Health'),
+      el('p', {}, 'Owner view. What every surface does, whether it is running, ' +
+        'and the next piece of work on it.')),
+
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' }, el('h2', {}, 'At a glance')),
+      el('div', { class: 'tiles' },
+        tile('Surfaces', num(HEALTH.length), 'tabs and pages', true),
+        tile('Working', num(counts.live || 0), 'end to end'),
+        tile('Partial', num(counts.partial || 0), 'with a stated gap'),
+        tile('Planned', num(counts.planned || 0), 'described, not built'),
+        tile('Demo only', num(counts.demo || 0), 'needs a backend'),
+        tile('Boot', `${Math.round(performance.now() - started)} ms`, 'all datasets')),
+      watermark()),
+
+    datasetPanel,
+    tabPanel,
+
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' }, el('h2', {}, 'The one thing blocking the rest')),
+      el('div', { class: 'prose' },
+        p('<span class="lead">Four separate items — enforceable paid access, ' +
+          'a real admin login, Trends, and a language-model Ask — are all the ' +
+          'same missing piece: a small server.</span>'),
+        p('Everything on this site today is static files. That is why it is ' +
+          'fast, free to host and impossible to break. It is also why a paywall ' +
+          'can be bypassed from devtools, why an API key cannot be held, and ' +
+          'why nothing can run on a schedule.'),
+        p('<b>The next build step, in order:</b>'),
+        ul([
+          'Decide the repo goes public (free hosting) or pick Cloudflare Pages / Netlify, which serve private repos free.',
+          'Point a domain at it. AdSense will not approve a github.io subdomain.',
+          'Add a tiny backend — a serverless function is enough — to hold the Stripe webhook, the admin session, and one scheduled job.',
+          'Move the Pro dataset behind that function. That single change makes the paywall real and the admin console real at once.',
+          'Then Trends and a language-model Ask become straightforward.',
+        ]))),
+
+    el('div', { class: 'note', html:
+      '<b>This page reads live.</b> Dataset rows above are fetched when you ' +
+      'open it, so a broken or missing league shows as an error here before a ' +
+      'customer ever finds it.' }));
+}
+
+// -------------------------------------------------------------- chat engine
+//
+// A deterministic query engine, not a language model. It recognises a fixed
+// set of question shapes and answers each by computing over the loaded data,
+// which means it is either exactly right or it says it does not understand --
+// it can never invent a plausible-sounding number, which is the failure mode
+// that makes stats chatbots untrustworthy.
+
+const STAT_WORDS = {
+  mlb: {
+    'home run': 'HR', 'homer': 'HR', 'hr': 'HR', 'rbi': 'RBI', 'run': 'R',
+    'hit': 'H', 'stolen base': 'SB', 'steal': 'SB', 'walk': 'BB',
+    'double': 'D2', 'triple': 'D3', 'strikeout': 'SO',
+    'win': 'W', 'save': 'SV', 'inning': 'IPouts', 'era': 'ERA',
+    'point': 'pts', 'fantasy point': 'pts',
+  },
+  nfl: {
+    'passing yard': 'PassYd', 'pass yard': 'PassYd', 'passing touchdown': 'PassTD',
+    'pass td': 'PassTD', 'rushing yard': 'RushYd', 'rush yard': 'RushYd',
+    'rushing touchdown': 'RushTD', 'rush td': 'RushTD', 'reception': 'Rec',
+    'catch': 'Rec', 'receiving yard': 'RecYd', 'receiving touchdown': 'RecTD',
+    'interception': 'Int', 'fumble': 'FumLost', 'target': 'Tgt',
+    'point': 'pts', 'fantasy point': 'pts',
+  },
+  nba: {
+    'point': 'PTS', 'rebound': 'REB', 'assist': 'AST', 'steal': 'STL',
+    'block': 'BLK', 'turnover': 'TOV', 'three': 'FG3M', '3-pointer': 'FG3M',
+    'free throw': 'FTM', 'minute': 'MIN', 'fantasy point': 'pts',
+  },
+};
+
+const AWARD_WORDS = { 'cy young': 'CY', mvp: 'MVP', 'rookie of the year': 'ROY',
+                      'gold glove': 'GG', 'silver slugger': 'SS',
+                      'triple crown': 'TC' };
+
+function chatStat(text, sportId) {
+  const table = STAT_WORDS[sportId] || {};
+  const keys = Object.keys(table).sort((a, b) => b.length - a.length);
+  for (const k of keys) if (text.includes(k)) return table[k];
+  return null;
+}
+
+/** Answer a question, or explain that it is out of scope. Returns nodes. */
+async function chatAnswer(question) {
+  const q = norm(question);
+  const s = sport();
+  const league = s.league;
+  const askLine = `Ask ${/^[AEIOUFHLMNRSX]/.test(s.league) ? 'an' : 'a'} ${s.league} question.`;
+
+  if (!q.trim()) return [el('p', {}, askLine)];
+
+  const year = (q.match(/\b(18[7-9]\d|19\d\d|20[0-2]\d)\b/) || [])[1];
+  const wantsMost = /\b(most|lead|led|leader|leads|top|best|highest|record)\b/.test(q);
+  const award = Object.keys(AWARD_WORDS).find((a) => q.includes(a));
+
+  // --- awards (baseball only; the award table is in the MLB dataset) -----
+  if (award && s.id === 'mlb') {
+    const key = AWARD_WORDS[award];
+    const board = await getBoard('lb_career_batting');
+    const pitch = await getBoard('lb_career_pitching');
+    const seen = new Map();
+    for (const row of [...board, ...pitch]) seen.set(row.id, row.name);
+    const holders = [];
+    for (const [id, name] of seen) {
+      const rec = await getShard(id).catch(() => null);
+      if (rec?.aw?.[key]) holders.push({ id, name, n: rec.aw[key] });
+      if (holders.length > 400) break;
+    }
+    holders.sort((a, b) => b.n - a.n);
+    if (!holders.length) return [el('p', {}, `No ${award} data in this dataset.`)];
+    return [
+      el('p', { html: `<b>${holders[0].name}</b> has the most, with ` +
+        `<b>${holders[0].n}</b>.` }),
+      chatList(holders.slice(0, 5).map((h) => [h.name, `${h.n}×`, playerHref(h.id)])),
+      el('div', { class: 'chat-note' },
+        'Counted across the players on the career leaderboards.'),
+    ];
+  }
+
+  const stat = chatStat(q, s.id);
+
+  // --- "who led <league> in <stat> in <year>" ---------------------------
+  if (year && (wantsMost || stat)) {
+    const boardName = s.generic ? 'lb_season'
+      : (isPitchingStat(stat) ? 'lb_season_pitching' : 'lb_season_batting');
+    const rows = (await getBoard(boardName)).filter((r) => r.year === Number(year));
+    if (!rows.length) {
+      return [el('p', {}, `No ${league} data for ${year}. ` +
+        `Coverage runs ${state.meta.seasons[0]}–${state.meta.seasons[1]}.`)];
+    }
+    const key = stat && rows[0][stat] !== undefined ? stat : 'pts';
+    const sorted = [...rows].sort((a, b) => (b[key] || 0) - (a[key] || 0));
+    const label = key === 'pts' ? 'fantasy points' : key;
+    return [
+      el('p', { html: `<b>${sorted[0].name}</b> led ${league} in ${label} in ` +
+        `${year} with <b>${num(sorted[0][key], 0)}</b>.` }),
+      chatList(sorted.slice(0, 5).map((r) => [r.name, num(r[key], 0), playerHref(r.id)])),
+    ];
+  }
+
+  // --- "who has the most <stat> of all time" ---------------------------
+  if (wantsMost || stat) {
+    const boardName = s.generic ? 'lb_career'
+      : (isPitchingStat(stat) ? 'lb_career_pitching' : 'lb_career_batting');
+    const rows = await getBoard(boardName);
+    const key = stat && rows[0][stat] !== undefined ? stat : 'pts';
+    const sorted = [...rows].sort((a, b) => (b[key] || 0) - (a[key] || 0));
+    const label = key === 'pts' ? 'career fantasy points' : `career ${key}`;
+    return [
+      el('p', { html: `<b>${sorted[0].name}</b> leads all time in ${label} with ` +
+        `<b>${num(sorted[0][key], 0)}</b>.` }),
+      chatList(sorted.slice(0, 5).map((r) => [r.name, num(r[key], 0), playerHref(r.id)])),
+      el('div', { class: 'chat-note' },
+        `${league} coverage: ${state.meta.seasons[0]}–${state.meta.seasons[1]}.`),
+    ];
+  }
+
+  // --- a player's name on its own ---------------------------------------
+  const hit = searchPlayers(question, 1)[0];
+  if (hit) {
+    return [
+      el('p', { html: `<b>${hit.name}</b> — ${hit.y0}–${hit.y1}, ` +
+        `<b>${num(hit.pts, 0)}</b> career fantasy points under the current scoring.` }),
+      chatList([[hit.name, 'open player page', playerHref(hit.id)]]),
+    ];
+  }
+
+  return [el('p', { class: 'chat-miss' }, askLine)];
+}
+
+const PITCHING_STATS = new Set(['W', 'SV', 'ERA', 'IPouts', 'SO']);
+const isPitchingStat = (stat) => stat !== null && PITCHING_STATS.has(stat);
+
+function chatList(items) {
+  return el('ol', { class: 'chat-list' },
+    items.map(([name, value, href]) => el('li', {},
+      el('a', { class: 'plink', href }, name),
+      el('span', {}, value))));
+}
+
+function viewChat() {
+  const s = sport();
+  const log = el('div', { class: 'chat-log' });
+  const input = el('input', {
+    type: 'text', class: 'chat-input', autocomplete: 'off',
+    placeholder: `Ask ${/^[AEIOUFHLMNRSX]/.test(s.league) ? 'an' : 'a'} ${s.league} question…`,
+    'aria-label': `Ask about ${s.league}`,
+  });
+
+  const say = (who, nodes) => {
+    log.append(el('div', { class: `chat-msg ${who}` }, nodes));
+    log.scrollTop = log.scrollHeight;
+  };
+
+  const ask = async (text) => {
+    if (!text.trim()) return;
+    say('you', [el('p', {}, text)]);
+    input.value = '';
+    const thinking = el('div', { class: 'chat-msg bot' }, el('p', {}, '…'));
+    log.append(thinking);
+    try {
+      const answer = await chatAnswer(text);
+      thinking.remove();
+      say('bot', answer);
+    } catch (err) {
+      thinking.remove();
+      say('bot', [el('p', { class: 'chat-miss' },
+        `Ask ${/^[AEIOUFHLMNRSX]/.test(s.league) ? 'an' : 'a'} ${s.league} question.`)]);
+    }
+  };
+
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') ask(input.value); });
+
+  const examples = s.id === 'mlb'
+    ? ['Who led MLB in home runs in 1972?', 'Who has the most Cy Young awards of all time?',
+       'Most stolen bases all time', 'Who led the league in fantasy points in 1998?']
+    : s.id === 'nfl'
+      ? ['Who led the NFL in passing yards in 2013?', 'Most receiving touchdowns all time',
+         'Who scored the most fantasy points in 2007?']
+      : ['Who led the NBA in points in 2016?', 'Most assists all time',
+         'Who had the most rebounds in 2011?'];
+
+  app().replaceChildren(
+    el('div', { class: 'view-head' },
+      el('h1', {}, `Ask ${s.league}`),
+      el('p', {}, 'Questions answered by computing over this site’s data — ' +
+        'never guessed. Every answer links to the page it came from.')),
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' },
+        el('h2', {}, el('span', { class: 'live-dot' }), `${s.emoji} ${s.league} assistant`),
+        el('span', { class: 'hint' },
+          `${state.meta.seasons[0]}–${state.meta.seasons[1]} · switch leagues to ask about another`)),
+      log,
+      el('div', { class: 'chat-bar' },
+        input,
+        el('button', { class: 'btn primary', onclick: () => ask(input.value) }, 'Ask')),
+      el('div', { class: 'chat-examples' },
+        examples.map((ex) => el('button', { class: 'chip', onclick: () => ask(ex) }, ex))),
+      watermark()),
+    el('div', { class: 'note', html:
+      '<b>Rule-based, on purpose.</b> This is a query engine, not a language ' +
+      'model: it recognises a set of question shapes and computes the answer ' +
+      'from the same data the rest of the site draws on. It cannot invent a ' +
+      'number, and when a question falls outside what it understands it says ' +
+      'so rather than guessing. Answers follow your custom scoring.' }));
+
+  say('bot', [el('p', {}, `Ask me about ${s.league} — leaders, records, or a player. ` +
+    'Tap an example below to see the shape of question I understand.')]);
 }
 
 // -------------------------------------------------------------- beta views
@@ -3255,14 +4086,31 @@ async function route() {
   const sportId = hasSport ? parts[0] : 'mlb';
   const [view, arg] = hasSport ? parts.slice(1) : parts;
 
-  if (sportId !== state.sport) applySport(sportId);
+  if (sportId !== state.sport || !state.meta) await applySport(sportId);
 
   document.querySelectorAll('#tabs a').forEach((a) =>
     a.classList.toggle('active', a.dataset.view === (view || 'player')));
   window.scrollTo({ top: 0 });
 
   // Data views need a dataset. Reference and account pages work everywhere.
+  const generic = sport().generic === true;
   const dataViews = ['player', 'career', 'season', 'year', 'live', 'compare'];
+  if (generic && ['live', 'compare'].includes(view)) {
+    return app().replaceChildren(
+      el('div', { class: 'view-head' },
+        el('h1', {}, `${sport().league} ${view === 'live' ? 'This Season' : 'Compare'}`),
+        el('p', {}, sport().tagline)),
+      el('div', { class: 'panel' },
+        el('div', { class: 'panel-head' }, el('h2', {}, 'Baseball only, for now')),
+        el('div', { class: 'empty-state' },
+          el('h3', {}, `${view === 'live' ? 'Live stats' : 'Compare'} is not wired up for ${sport().league}`),
+          el('div', {}, view === 'live'
+            ? `${sport().league} data is a published season file, not a live feed. Historical seasons are complete and searchable.`
+            : 'Head-to-head comparison currently reads the baseball record shape.')),
+        el('div', { class: 'empty-state' },
+          el('div', {}, 'Try ', el('a', { href: `#/${sport().id}/career` }, `${sport().league} Career Leaders`), '.')),
+        watermark()));
+  }
   if (dataViews.includes(view || 'player') && !sportHasData()) {
     const labels = { player: 'Player Lookup', career: 'Career Leaders',
                      season: 'Season Leaders', year: 'Year Explorer',
@@ -3276,12 +4124,12 @@ async function route() {
 
   try {
     switch (view) {
-      case 'player':  await viewPlayer(arg); break;
-      case 'career':  await viewLeaders('career'); break;
-      case 'season':  await viewLeaders('season'); break;
-      case 'year':    await viewYear(arg); break;
+      case 'player':  await (generic ? viewGenericPlayer : viewPlayer)(arg); break;
+      case 'career':  await (generic ? viewGenericBoard('career') : viewLeaders('career')); break;
+      case 'season':  await (generic ? viewGenericBoard('season') : viewLeaders('season')); break;
+      case 'year':    await (generic ? viewGenericYear(arg) : viewYear(arg)); break;
       case 'compare': await viewCompare(arg); break;
-      case 'scoring': viewScoring(); break;
+      case 'scoring': generic ? viewGenericScoring() : viewScoring(); break;
       case 'live':    await viewLive(); break;
       case 'about':   viewAbout(); break;
       case 'contact': viewContact(); break;
@@ -3292,6 +4140,8 @@ async function route() {
       case 'trends':  viewTrends(); break;
       case 'ask':     viewAsk(); break;
       case 'admin':   viewAdmin(); break;
+      case 'health':  await viewHealth(); break;
+      case 'chat':    viewChat(); break;
       default:        await viewPlayer(null);
     }
   } catch (err) {
@@ -3307,18 +4157,11 @@ async function route() {
 async function boot() {
   initTheme();   // before any await, so the toggle works even if data fails
   try {
-    const [meta, index, pct] = await Promise.all([
-      getJSON('meta.json'), getJSON('search.json'), getJSON('percentiles.json'),
-    ]);
-    state.meta = meta;
-    state.index = index;
-    state.pct = pct;
-    state.norm = index.names.map(norm);
-    idPos = new Map(index.ids.map((id, i) => [id, i]));
-    pidPos = new Map((index.pid || []).map((pid, i) => [pid, i]));
+    await loadSportData('mlb');
+    useSportData('mlb');
 
     initSportSwitch();
-    applySport(state.sport);
+    await applySport(state.sport);
     updateTierBadge();
     renderFooter();
     warnUnsetConfig();

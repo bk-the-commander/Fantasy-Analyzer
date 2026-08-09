@@ -893,6 +893,7 @@ select:focus, input:focus, textarea:focus {
   background: linear-gradient(180deg, var(--accent-strong), var(--accent-deep));
   color: #fff; box-shadow: 0 3px 12px var(--accent-line);
 }
+.sport-switch .ball { font-size: 12px; line-height: 1; }
 .sport-switch .soon {
   font-size: 8.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
   padding: 1px 5px; border-radius: 999px;
@@ -1104,4 +1105,73 @@ select:focus, input:focus, textarea:focus {
   .upgrade-text { text-align: center; align-items: center; }
   .admin-row { justify-content: center; text-align: center; }
   .setting { flex-wrap: nowrap; }
+}
+
+/* -------------------------------------------------------- health + chat */
+/* The owner's status link is red on purpose: it should never be mistaken for
+   a customer-facing tab. */
+.tabs a.tab-health {
+  color: #e5484d; border-color: rgba(229, 72, 77, .45); font-weight: 700;
+}
+.tabs a.tab-health:hover { background: rgba(229, 72, 77, .10); color: #ff6369; }
+.tabs a.tab-health.active { background: #c62a2f; border-color: #e5484d; color: #fff; }
+
+.health-list { display: flex; flex-direction: column; }
+.health-item { padding: 15px 18px; border-bottom: 1px solid var(--border); text-align: left; }
+.health-item:last-child { border-bottom: 0; }
+.health-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 6px; flex-wrap: wrap;
+}
+.health-name { font-size: 14px; font-weight: 700; color: var(--text-strong); }
+.health-name:hover { color: var(--accent); }
+.health-what { margin: 0 0 8px; font-size: 12.5px; color: var(--text-muted); line-height: 1.65; }
+.health-next {
+  font-size: 11.5px; color: var(--text-faint); font-style: italic;
+  padding-top: 8px; border-top: 1px dashed var(--border);
+}
+.health-next b { color: var(--accent); font-style: normal; }
+.pill.status-live    { background: rgba(63,185,107,.14); color: #3fb96b; border: 1px solid rgba(63,185,107,.35); }
+.pill.status-partial { background: rgba(240,180,41,.14); color: #d99a12; border: 1px solid rgba(240,180,41,.35); }
+.pill.status-planned { background: var(--surface-3); color: var(--text-faint); border: 1px solid var(--border); }
+.pill.status-demo    { background: rgba(229,72,77,.13); color: #e5484d; border: 1px solid rgba(229,72,77,.32); }
+
+.chat-log {
+  padding: 16px 18px; max-height: 52vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 12px; text-align: left;
+}
+.chat-msg { max-width: 88%; padding: 11px 14px; border-radius: 14px; font-size: 13.5px; line-height: 1.65; }
+.chat-msg p { margin: 0; }
+.chat-msg.you {
+  align-self: flex-end; background: linear-gradient(180deg, var(--accent-strong), var(--accent-deep));
+  color: #fff; border-bottom-right-radius: 4px;
+}
+.chat-msg.bot {
+  align-self: flex-start; background: var(--surface-2);
+  border: 1px solid var(--border); border-bottom-left-radius: 4px; color: var(--text);
+}
+.chat-msg.bot b { color: var(--accent); }
+.chat-miss { color: var(--text-muted); font-style: italic; }
+.chat-list { margin: 10px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 5px; }
+.chat-list li { font-size: 12.5px; }
+.chat-list li span { float: right; font-family: var(--mono); color: var(--accent); font-weight: 700; }
+.chat-note { margin-top: 9px; font-size: 11px; color: var(--text-faint); font-style: italic; }
+.chat-bar { display: flex; gap: 9px; padding: 0 18px 14px; }
+.chat-input { flex: 1; min-width: 0; font-size: 16px; }
+.chat-examples { display: flex; gap: 7px; flex-wrap: wrap; padding: 0 18px 18px; justify-content: center; }
+.chip {
+  background: var(--surface-2); border: 1px solid var(--border-strong);
+  color: var(--text-muted); border-radius: 999px; padding: 6px 12px;
+  font-size: 11.5px; cursor: pointer; font-family: var(--sans); text-align: left;
+}
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+
+/* iPhone-first: a 16px input is what stops iOS zooming the page on focus. */
+@media (max-width: 560px) {
+  #globalSearch, .chat-input, .setting input, select, input[type="number"], input[type="text"] {
+    font-size: 16px;
+  }
+  .chat-msg { max-width: 94%; }
+  .chat-log { max-height: 58vh; }
+  .health-head { justify-content: flex-start; }
 }

@@ -124,6 +124,45 @@ def main() -> int:
     for name in BOARDS:
         payload[name] = trim_board(load(name), args.board_rows)
 
+    # Football and basketball ride along under league-scoped keys. Their
+    # datasets are small enough to carry whole boards; only the per-player
+    # records are trimmed, on the same "biggest careers plus best seasons"
+    # rule the baseball subset uses.
+    for league in ("nfl", "nba"):
+        ddir = WEB / f"data-{league}"
+        if not (ddir / "meta.json").exists():
+            continue
+        lmeta = json.loads((ddir / "meta.json").read_text())
+        lindex = json.loads((ddir / "search.json").read_text())
+        payload[f"{league}:meta.json"] = lmeta
+        payload[f"{league}:search.json"] = lindex
+        payload[f"{league}:percentiles.json"] = json.loads(
+            (ddir / "percentiles.json").read_text())
+        for board in ("lb_career.json", "lb_season.json"):
+            raw = json.loads((ddir / board).read_text())
+            payload[f"{league}:{board}"] = trim_board(raw, args.board_rows)
+
+        ranked = sorted(zip(lindex["ids"], lindex["bp"]), key=lambda t: -t[1])
+        keep_l = [pid for pid, _ in ranked[:args.players]]
+        season_board = json.loads((ddir / "lb_season.json").read_text())
+        col = season_board["cols"].index("id")
+        seen_l = set(keep_l)
+        for row in season_board["rows"][:args.season_rows]:
+            if row[col] not in seen_l:
+                seen_l.add(row[col])
+                keep_l.append(row[col])
+        lplayers, lshards = {}, {}
+        for pid in keep_l:
+            shard = pid % lmeta["shards"]
+            if shard not in lshards:
+                lshards[shard] = json.loads(
+                    (ddir / "players" / f"{shard}.json").read_text())
+            rec = lshards[shard].get(str(pid))
+            if rec:
+                lplayers[str(pid)] = rec
+        payload[f"{league}:players"] = lplayers
+        print(f"  + {league}: {len(lplayers)} player records")
+
     # Real markup, real styles, real application code -- only the data differs.
     html = (WEB / "index.html").read_text()
     body = html.split("<body>", 1)[1].split("</body>", 1)[0]
