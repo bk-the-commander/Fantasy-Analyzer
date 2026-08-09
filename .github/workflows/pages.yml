@@ -1,0 +1,51 @@
+name: Deploy site to GitHub Pages
+
+# Publishes web/ as the live site. Enable it once under
+# Settings -> Pages -> Source: GitHub Actions, then every push to a listed
+# branch redeploys.
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      # Both working branches are listed so the deploy fires whether the site
+      # is merged into the current default branch or the default branch is
+      # repointed at the lookup branch. Pages itself only publishes from the
+      # default branch, so the other one simply no-ops.
+      - claude/fantasy-baseball-lookup-7en33b
+      - claude/fantasy-baseball-points-8j55fo
+    paths:
+      - 'web/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+        with:
+          # Turn Pages on from here rather than requiring a trip to repo
+          # settings. If the token cannot do it, this still fails with the
+          # same "Get Pages site failed" error and the switch has to be
+          # flipped manually under Settings -> Pages -> Source: GitHub Actions.
+          enablement: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deployment
+        uses: actions/deploy-pages@v4
