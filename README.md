@@ -1,10 +1,85 @@
 # Fantasy Analyzer
 
-Fantasy baseball assistant for a 12-team Yahoo H2H points, all-baseball,
-keeper league. Pulls current-season MLB stats, applies the league's exact
-scoring formulas, ranks players by fantasy points, and surfaces Statcast
-context (xwOBA, barrel%, hard-hit%, xERA) to help spot regression/breakout
-candidates that raw box-score points miss.
+Tools for a 12-team Yahoo H2H points, all-baseball, keeper league. Two pieces:
+
+1. **[The web app](web/)** — every MLB player since 1871, scored in *our*
+   league's points. Look anybody up, see their career and season-by-season
+   totals, percentile rails against every qualified player in history, and
+   filterable all-time leaderboards.
+2. **[The CLI](#usage)** — current-season rankings with Statcast context
+   (xwOBA, barrel%, hard-hit%, xERA) for spotting regression and breakout
+   candidates in-season.
+
+Both read the scoring rules from the same `fantasy_baseball/config.py`, so they
+can't drift apart.
+
+## The web app
+
+A static site — plain HTML/CSS/JS plus a prebuilt JSON dataset. No server, no
+framework, no build step, no API keys.
+
+```bash
+python3 -m http.server 8811 -d web   # then open http://localhost:8811
+```
+
+Opening `web/index.html` straight off disk will *not* work: browsers block
+local JSON reads, and the app says so if you try.
+
+**Views**
+
+| Tab | What it does |
+| --- | --- |
+| Player Lookup | Search all 20,730 players. Career or any single season: point tiles, percentile rails, a points-by-season chart, full stat log. |
+| Career Leaders | Every career ranked by league points. Filter by era, position, games; sort by any column. |
+| Season Leaders | The best single seasons ever, same filters. Sort by PTS+ for a fair cross-era read. |
+| Year Explorer | Any season back to 1871 — who would have won your league that year. |
+| Compare | Careers side by side, best value per row highlighted. |
+| Scoring | The league's rules, plus exactly which categories the historical data can and cannot support. |
+
+**PTS+** is the era-adjusted number: a player's points per opportunity (PA for
+hitters, IP for pitchers) divided by that season's qualified-league average,
+indexed to 100. Raw totals reward era as much as talent — Old Hoss Radbourn
+threw 678 innings in 1884 and owns the single-season pitching record forever —
+so PTS+ is what to sort by when comparing across generations.
+
+### Rebuilding the dataset
+
+```bash
+python scripts/build_web_data.py          # ~70s, writes web/data/ (~20 MB)
+node scripts/smoke_web.js                 # headless check of every view
+```
+
+The builder pulls the Lahman / Chadwick Bureau Baseball Databank from the
+`pylahman` wheel on PyPI and reads its parquet payload directly. PyPI is used
+because `statsapi.mlb.com` is blocked by egress policy in the environment this
+was built in; if you have open network access, nothing stops you from swapping
+in another source.
+
+### Publishing
+
+`.github/workflows/pages.yml` deploys `web/` to GitHub Pages. Turn it on once
+under **Settings → Pages → Source: GitHub Actions**; after that every push
+that touches `web/` redeploys. (Pages' simpler "deploy from a branch" mode only
+serves `/` or `/docs`, which is why this uses Actions instead.)
+
+### What the historical data cannot cover
+
+The databank carries season totals, not play-by-play, and predates some
+modern bookkeeping. These categories score **0** on the site and are greyed out
+on the Scoring tab rather than being silently folded in:
+
+- **Holds, Blown Saves, Quality Starts** — not in the databank at all. This
+  makes modern relievers (holds) and innings-eating starters (QS) look modestly
+  cheaper than they'd score in a live season.
+- **Cycles, Grand Slams, No-hitters, Perfect Games** — need play-by-play data.
+
+Everything else — every batting category, plus IP/W/L/CG/SHO/SV/ER/K — is
+computed exactly as the league scores it. Note that a walk scores twice for an
+intentional walk (1 for BB, 1 for IBB), matching how Yahoo applies the two
+categories; it's why Bonds' 2004 is the highest-scoring batting season here.
+
+Coverage runs **1871–2023** (the databank's last complete season), 20,730
+players, 105,150 batting seasons, 47,366 pitching seasons.
 
 ## League settings
 
