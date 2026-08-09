@@ -1,0 +1,4 @@
+ticker,shares,cost_basis,account
+AAPL,10,150.25,Brokerage
+VOO,25,380.10,Roth IRA
+NVDA,5,420.00,Brokerage

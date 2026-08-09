@@ -3,3 +3,8 @@ pandas>=2.0
 numpy>=1.24
 requests>=2.31
 pytest>=7.4
+
+# finance_tracker
+yfinance>=0.2.40
+streamlit>=1.35
+pyyaml>=6.0

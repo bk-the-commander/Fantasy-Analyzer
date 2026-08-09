@@ -1,0 +1,31 @@
+# Template -- copy to data/profile.yaml and fill in your real numbers.
+#   cp data/examples/profile.yaml data/profile.yaml
+# data/profile.yaml is gitignored, so your real income/balances never get committed.
+
+income:
+  monthly_net_salary: 6500   # take-home pay per month, used if a given month has no logged paychecks
+
+# Monthly budget target per spending category. Category names must match the
+# "category" column you use in transactions.csv.
+budget:
+  Rent: 1800
+  Groceries: 500
+  Dining: 300
+  Transportation: 200
+  Utilities: 150
+  Entertainment: 150
+  Subscriptions: 50
+  Shopping: 200
+  Savings: 1500
+  Misc: 200
+
+# Cash balances by account, included in net worth.
+cash_accounts:
+  Checking: 4200
+  Savings: 15000
+  Emergency Fund: 10000
+
+# Debts, subtracted from net worth.
+liabilities:
+  Credit Card: 800
+  Student Loan: 12000

@@ -4,3 +4,10 @@ __pycache__/
 .pytest_cache/
 *.csv
 .pybaseball_cache/
+
+# Real financial data: private, never committed. Templates live in data/examples/
+# and are explicitly un-ignored below (the blanket *.csv rule above would
+# otherwise hide them too).
+/data/*
+!/data/examples/
+!/data/examples/*

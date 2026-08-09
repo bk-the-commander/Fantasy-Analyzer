@@ -118,3 +118,99 @@ Unit tests validate the scoring arithmetic against hand-computed expected
 point totals — they don't hit the network, since the scoring math is what
 actually encodes the league rules and is what most needs to be provably
 correct.
+
+---
+
+# Finance Tracker
+
+A personal budget + stock portfolio dashboard: net worth, spending vs.
+budget, portfolio value/gain-loss, and a technical-indicator screener that
+flags your holdings/watchlist for RSI, moving-average, and MACD buy/watch
+signals, plus recent news per ticker.
+
+**This is not financial advice.** The "buy signals" are plain technical
+rules of thumb (RSI oversold, golden cross, MACD crossover, proximity to the
+52-week range) — a starting point for your own research, not a
+recommendation.
+
+**Your data stays local.** Income, holdings, and spending live in `data/`,
+which is gitignored — nothing you enter is ever committed. Only the
+templates in `data/examples/` (fake numbers) are tracked in git.
+
+## Setup
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Populate your real data from the templates (gitignored, edit freely):
+cp data/examples/profile.yaml data/profile.yaml
+cp data/examples/holdings.csv data/holdings.csv
+cp data/examples/transactions.csv data/transactions.csv
+cp data/examples/watchlist.csv data/watchlist.csv
+```
+
+Then edit those four files in `data/`:
+- **`profile.yaml`** — monthly take-home pay, budget target per spending
+  category, cash account balances, liabilities.
+- **`holdings.csv`** — `ticker,shares,cost_basis,account` for stocks/ETFs you
+  own.
+- **`transactions.csv`** — `date,category,description,amount` spending/income
+  log. Negative `amount` = money out, positive = money in. Log a paycheck as
+  `category=Income`.
+- **`watchlist.csv`** — `ticker,note` for stocks you don't own yet but want
+  screened for buy signals.
+
+## Usage
+
+```bash
+streamlit run finance_tracker/app.py
+```
+
+Opens a local dashboard with four tabs:
+- **Overview** — net worth, portfolio value, this month's spending, savings
+  rate, cash/liability balances.
+- **Spending** — budget vs. actual by category (with an over-budget
+  warning), spending by category, and a 12-month spending trend.
+- **Portfolio** — holdings priced live via yfinance, unrealized gain/loss,
+  allocation by ticker.
+- **Buy Signals** — screens every holding + watchlist ticker for RSI,
+  moving-average cross, MACD, and 52-week-range signals, plus a news feed
+  per ticker.
+
+## Architecture
+
+- `finance_tracker/config.py` — file paths and all tunable thresholds (RSI
+  levels, moving-average windows, "near 52-week high/low" cutoffs) in one
+  place.
+- `finance_tracker/storage.py` — loads and validates the four files in
+  `data/`; raises a clear "copy this template" error if one is missing.
+- `finance_tracker/indicators.py` — pure price-series math (SMA, RSI, MACD,
+  52-week range, crossover detection). No network calls, so it's fully unit
+  tested against hand-built price series.
+- `finance_tracker/market.py` — the only module that talks to the network
+  (via `yfinance`): current prices, historical OHLCV, news, portfolio
+  valuation. Fetch failures are logged and skipped per-ticker rather than
+  crashing the dashboard.
+- `finance_tracker/budget.py` — spending-by-category, budget-vs-actual,
+  savings rate, net worth. Pure pandas over the transactions log.
+- `finance_tracker/signals.py` — combines `indicators.py` output into
+  human-readable buy/watch flags per ticker (e.g. "RSI oversold (24 < 30)",
+  "Golden cross (SMA50 crossed above SMA200)").
+- `finance_tracker/app.py` — the Streamlit dashboard tying it all together.
+
+## Known limitations
+
+- **Built without live network access to `query1.finance.yahoo.com`**
+  (blocked by the build sandbox's egress policy, same as the fantasy
+  baseball tool's MLB Stats API access — see above). `market.py`'s network
+  calls were verified to fail *gracefully* (logged warning, ticker skipped,
+  no crash) but not verified against real price data. Run the dashboard with
+  real network access first thing and sanity-check a couple of known prices.
+- **Rare-event/dividend/split adjustments** aren't handled beyond what
+  `yfinance`'s `auto_adjust=True` does automatically.
+- **The screener is single-signal-per-indicator**, not a composite/weighted
+  score — `buy_signal_count` is a simple count of triggered buy-oriented
+  flags. Tune thresholds in `config.py`, or extend `signals.py`, to match
+  your own strategy.
