@@ -116,7 +116,7 @@ RENAME = {"2B": "D2", "3B": "D3"}
 BAT_COUNTING = ["G", "AB", "R", "H", "D2", "D3", "HR", "RBI", "SB", "CS", "BB",
                 "SO", "IBB", "HBP", "SH", "SF"]
 PIT_COUNTING = ["W", "L", "G", "GS", "CG", "SHO", "SV", "IPouts", "H", "ER",
-                "HR", "BB", "SO"]
+                "HR", "BB", "SO", "HBP"]
 
 
 # --------------------------------------------------------------------------
@@ -462,7 +462,7 @@ def main() -> int:
                 [i0(r.yearID), txt(r.teamID), txt(r.lgID), i0(r.W), i0(r.L), i0(r.G),
                  i0(r.GS), i0(r.CG), i0(r.SHO), i0(r.SV), i0(r.IPouts), i0(r.H),
                  i0(r.ER), i0(r.HR), i0(r.BB), i0(r.SO), r1(r.ERA), r1(r.PTS),
-                 opt(r.PTS_PLUS)]
+                 opt(r.PTS_PLUS), i0(r.HBP)]
                 for r in pit_by_player[pid].itertuples(index=False)
             ]
             c = cp_rec[pid]
@@ -470,7 +470,7 @@ def main() -> int:
                 i0(c["W"]), i0(c["L"]), i0(c["G"]), i0(c["GS"]), i0(c["CG"]),
                 i0(c["SHO"]), i0(c["SV"]), i0(c["IPouts"]), i0(c["H"]), i0(c["ER"]),
                 i0(c["HR"]), i0(c["BB"]), i0(c["SO"]), r1(c["ERA"]), r1(c["PTS"]),
-                i0(c["yr_min"]), i0(c["yr_max"]), i0(c["yr_n"]),
+                i0(c["yr_min"]), i0(c["yr_max"]), i0(c["yr_n"]), i0(c["HBP"]),
             ]
         shards[n % SHARD_COUNT][str(n)] = rec
 
@@ -512,21 +512,27 @@ def main() -> int:
 
     season_bat = top_pool(bat, "PTS", 7000, 40, 30)
     dump(out / "lb_season_batting.json", {
-        "cols": ["id", "year", "team", "lg", "pos", "G", "PA", "HR", "R", "RBI",
-                 "SB", "BB", "pts", "ptsg", "ptsplus"],
+        "cols": ["id", "year", "team", "lg", "pos", "G", "PA", "AB", "R", "H",
+                 "D2", "D3", "HR", "RBI", "SB", "CS", "BB", "IBB", "HBP", "SO",
+                 "pts", "ptsg", "ptsplus"],
         "rows": [[i0(r.nid), i0(r.yearID), txt(r.teamID), txt(r.lgID), txt(r.POS),
-                  i0(r.G), i0(r.PA), i0(r.HR), i0(r.R), i0(r.RBI), i0(r.SB),
-                  i0(r.BB), r1(r.PTS), round(r.PTS_G, 2), opt(r.PTS_PLUS)]
+                  i0(r.G), i0(r.PA), i0(r.AB), i0(r.R), i0(r.H), i0(r.D2),
+                  i0(r.D3), i0(r.HR), i0(r.RBI), i0(r.SB), i0(r.CS), i0(r.BB),
+                  i0(r.IBB), i0(r.HBP), i0(r.SO),
+                  r1(r.PTS), round(r.PTS_G, 2), opt(r.PTS_PLUS)]
                  for r in season_bat.itertuples(index=False)],
     })
 
     season_pit = top_pool(pit, "PTS", 7000, 40, 30)
     dump(out / "lb_season_pitching.json", {
-        "cols": ["id", "year", "team", "lg", "G", "GS", "W", "L", "SV", "IP",
-                 "SO", "ERA", "pts", "ptsg", "ptsplus"],
+        "cols": ["id", "year", "team", "lg", "G", "GS", "CG", "SHO", "W", "L",
+                 "SV", "IPouts", "H", "ER", "HR", "BB", "SO", "HBP", "ERA",
+                 "pts", "ptsg", "ptsplus"],
         "rows": [[i0(r.nid), i0(r.yearID), txt(r.teamID), txt(r.lgID), i0(r.G),
-                  i0(r.GS), i0(r.W), i0(r.L), i0(r.SV), r1(r.IP), i0(r.SO),
-                  r1(r.ERA), r1(r.PTS), round(r.PTS_G, 2), opt(r.PTS_PLUS)]
+                  i0(r.GS), i0(r.CG), i0(r.SHO), i0(r.W), i0(r.L), i0(r.SV),
+                  i0(r.IPouts), i0(r.H), i0(r.ER), i0(r.HR), i0(r.BB), i0(r.SO),
+                  i0(r.HBP), r1(r.ERA),
+                  r1(r.PTS), round(r.PTS_G, 2), opt(r.PTS_PLUS)]
                  for r in season_pit.itertuples(index=False)],
     })
 
@@ -534,21 +540,27 @@ def main() -> int:
     cbf = cb[(cb["PA"] >= 100) | (cb["PTS"] >= 50)]
     cpf = cp[(cp["IPouts"] >= 90) | (cp["PTS"] >= 50)]
     dump(out / "lb_career_batting.json", {
-        "cols": ["id", "year0", "year1", "seasons", "G", "PA", "HR", "R", "RBI",
-                 "SB", "BB", "pts", "ptsg", "ptspa"],
+        "cols": ["id", "year0", "year1", "seasons", "G", "PA", "AB", "R", "H",
+                 "D2", "D3", "HR", "RBI", "SB", "CS", "BB", "IBB", "HBP", "SO",
+                 "pts", "ptsg", "ptspa"],
         "rows": [[i0(nid[pid]), i0(r["yr_min"]), i0(r["yr_max"]), i0(r["yr_n"]),
-                  i0(r["G"]), i0(r["PA"]), i0(r["HR"]), i0(r["R"]), i0(r["RBI"]),
-                  i0(r["SB"]), i0(r["BB"]), r1(r["PTS"]),
+                  i0(r["G"]), i0(r["PA"]), i0(r["AB"]), i0(r["R"]), i0(r["H"]),
+                  i0(r["D2"]), i0(r["D3"]), i0(r["HR"]), i0(r["RBI"]),
+                  i0(r["SB"]), i0(r["CS"]), i0(r["BB"]), i0(r["IBB"]),
+                  i0(r["HBP"]), i0(r["SO"]), r1(r["PTS"]),
                   round(r["PTS"] / r["G"], 2) if r["G"] else 0,
                   round(r["PTS"] / r["PA"], 3) if r["PA"] else 0]
                  for pid, r in cbf.sort_values("PTS", ascending=False).iterrows()],
     })
     dump(out / "lb_career_pitching.json", {
-        "cols": ["id", "year0", "year1", "seasons", "G", "GS", "W", "L", "SV",
-                 "IP", "SO", "ERA", "pts", "ptsg", "ptsip"],
+        "cols": ["id", "year0", "year1", "seasons", "G", "GS", "CG", "SHO",
+                 "W", "L", "SV", "IPouts", "H", "ER", "HR", "BB", "SO", "HBP",
+                 "ERA", "pts", "ptsg", "ptsip"],
         "rows": [[i0(nid[pid]), i0(r["yr_min"]), i0(r["yr_max"]), i0(r["yr_n"]),
-                  i0(r["G"]), i0(r["GS"]), i0(r["W"]), i0(r["L"]), i0(r["SV"]),
-                  r1(r["IP"]), i0(r["SO"]), r1(r["ERA"]), r1(r["PTS"]),
+                  i0(r["G"]), i0(r["GS"]), i0(r["CG"]), i0(r["SHO"]),
+                  i0(r["W"]), i0(r["L"]), i0(r["SV"]), i0(r["IPouts"]),
+                  i0(r["H"]), i0(r["ER"]), i0(r["HR"]), i0(r["BB"]),
+                  i0(r["SO"]), i0(r["HBP"]), r1(r["ERA"]), r1(r["PTS"]),
                   round(r["PTS"] / r["G"], 2) if r["G"] else 0,
                   round(r["PTS"] / r["IP"], 3) if r["IP"] else 0]
                  for pid, r in cpf.sort_values("PTS", ascending=False).iterrows()],
@@ -598,6 +610,43 @@ def main() -> int:
         },
     })
 
+    # --- per-season league context ----------------------------------------
+    # OPS+ and ERA+ are only meaningful against the league a player actually
+    # faced, and FIP needs that season's own constant to land on the ERA scale.
+    # Computing all three here keeps the client free of a second data pass.
+    qb_ctx = bat[bat["PA"] >= QUAL_SEASON_PA].copy()
+    qb_ctx["OBP_N"] = qb_ctx["H"] + qb_ctx["BB"] + qb_ctx["HBP"]
+    qb_ctx["OBP_D"] = qb_ctx["AB"] + qb_ctx["BB"] + qb_ctx["HBP"] + qb_ctx["SF"]
+    qb_ctx["TB"] = (qb_ctx["H"] + qb_ctx["D2"] + 2 * qb_ctx["D3"] + 3 * qb_ctx["HR"])
+    bat_ctx = qb_ctx.groupby("yearID").agg(
+        obp_n=("OBP_N", "sum"), obp_d=("OBP_D", "sum"),
+        tb=("TB", "sum"), ab=("AB", "sum"))
+
+    qp_ctx = pit[pit["IP"] >= QUAL_SEASON_IP]
+    pit_ctx = qp_ctx.groupby("yearID").agg(
+        er=("ER", "sum"), outs=("IPouts", "sum"), hr=("HR", "sum"),
+        bb=("BB", "sum"), hbp=("HBP", "sum"), so=("SO", "sum"))
+
+    league_context = {}
+    for year in sorted(set(bat_ctx.index) | set(pit_ctx.index)):
+        entry = {}
+        if year in bat_ctx.index:
+            b = bat_ctx.loc[year]
+            obp = b.obp_n / b.obp_d if b.obp_d else 0
+            slg = b.tb / b.ab if b.ab else 0
+            entry["obp"] = round(float(obp), 4)
+            entry["slg"] = round(float(slg), 4)
+        if year in pit_ctx.index:
+            q = pit_ctx.loc[year]
+            innings = q.outs / 3.0
+            era = q.er * 9.0 / innings if innings else 0
+            # FIP constant = league ERA minus the raw FIP numerator rate.
+            raw = ((13 * q.hr + 3 * (q.bb + q.hbp) - 2 * q.so) / innings
+                   if innings else 0)
+            entry["era"] = round(float(era), 4)
+            entry["fipC"] = round(float(era - raw), 4)
+        league_context[int(year)] = entry
+
     # --- metadata ----------------------------------------------------------
     team_info = (teams.sort_values("yearID").groupby("teamID")
                  .agg(name=("name", "last"), franch=("franchID", "last"))
@@ -617,6 +666,7 @@ def main() -> int:
         "unsupported_batting": UNSUPPORTED_BATTING,
         "unsupported_pitching": UNSUPPORTED_PITCHING,
         "unrecorded_before": UNRECORDED_BEFORE,
+        "league_context": league_context,
         "qualifiers": {"season_pa": QUAL_SEASON_PA, "season_ip": QUAL_SEASON_IP,
                        "career_pa": QUAL_CAREER_PA, "career_ip": QUAL_CAREER_IP,
                        "rate_pa": MIN_RATE_PA, "rate_ip": MIN_RATE_IP},

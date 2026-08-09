@@ -155,8 +155,16 @@ async function checkRoleOrder(page, path, label, expectFirst) {
   await page.goto(`${BASE}/#/season`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(1200);
   const allRows = await page.$eval('.panel-head h2 + .hint, .panel-head h2', (n) => n.textContent);
-  await page.selectOption('.filters select', { label: 'Dead Ball' });
+  // Era options are labelled with their window now ("Dead Ball (1901–1919)"),
+  // so match on the name rather than the whole string.
+  const deadBall = await page.$$eval('.filters select:first-of-type option',
+    (opts) => (opts.find((o) => o.textContent.startsWith('Dead Ball')) || {}).value);
+  await page.selectOption('.filters select:first-of-type', deadBall);
   await page.waitForTimeout(700);
+  const eraLabelText = await page.$eval('.filters select:first-of-type option:checked',
+    (o) => o.textContent);
+  if (!/1901.*1919/.test(eraLabelText)) fail('era', `era label lacks its dates: "${eraLabelText}"`);
+  else ok('era', `era labels carry their years ("${eraLabelText}")`);
   const years = await page.$$eval('table.stats tbody tr td:nth-child(3)',
     (n) => n.slice(0, 25).map((x) => Number(x.textContent)));
   const inRange = years.every((y) => y >= 1901 && y <= 1919);
@@ -354,13 +362,178 @@ async function checkRoleOrder(page, path, label, expectFirst) {
     else ok('plans', `pro board shows ${pr.rows} rows, no caps`);
   }
 
+  // ------------------------------------------------------- custom scoring
+  console.log('\n— custom league scoring —');
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+    const cp = await ctx.newPage();
+    const errs = [];
+    cp.on('pageerror', (e) => errs.push(e.message));
+    await cp.addInitScript("try{localStorage.setItem('dsa-tier','pro')}catch(e){}");
+    await cp.goto(`${BASE}/#/mlb/career`, { waitUntil: 'networkidle' });
+    await cp.waitForTimeout(1500);
+
+    // Scoring the boards with the league's own weights must reproduce the
+    // published points. If these two engines ever disagree, every custom
+    // number on the site is wrong and nothing else here would catch it.
+    const identity = await cp.evaluate(async () => {
+      const w = defaultScoring();
+      const bat = await getBoard('lb_career_batting');
+      const pit = await getBoard('lb_career_pitching');
+      const worst = (rows, fn, weights) => rows.slice(0, 800).reduce(
+        (m, r) => Math.max(m, Math.abs(fn(flat(r), weights) - r.pts)), 0);
+      return { bat: worst(bat, scoreBatting, w.batting),
+               pit: worst(pit, scorePitching, w.pitching) };
+    });
+    // Published points are rounded to 1dp, so anything inside that is the
+    // rounding rather than a scoring difference.
+    if (identity.bat > 0.05 || identity.pit > 0.05) {
+      fail('scoring', `client engine disagrees with the dataset ` +
+        `(batting ${identity.bat.toFixed(3)}, pitching ${identity.pit.toFixed(3)})`);
+    } else {
+      ok('scoring', `client engine matches the dataset ` +
+        `(max ${Math.max(identity.bat, identity.pit).toFixed(3)}, rounding only)`);
+    }
+
+    // A weight change has to move the whole site, not just one view.
+    await cp.evaluate(() => {
+      const d = defaultScoring();
+      d.batting.SB = 10; d.batting.HR = 1;
+      saveScoring(d);
+    });
+    await cp.waitForTimeout(1800);
+    const leader = await cp.$eval('table.stats tbody tr td:nth-child(2)',
+      (n) => n.textContent.replace(/★.*/, '').trim());
+    if (leader !== 'Rickey Henderson') {
+      fail('scoring', `steals-heavy scoring put "${leader}" on top, expected Rickey Henderson`);
+    } else ok('scoring', 'weight change reorders the all-time board (Henderson leads on steals)');
+
+    const plusHidden = await cp.$$eval('table.stats th',
+      (n) => !n.some((x) => x.textContent.includes('PTS+')));
+    if (!plusHidden) fail('scoring', 'PTS+ still shown under custom weights');
+    else ok('scoring', 'PTS+ hidden under custom weights');
+
+    await cp.goto(`${BASE}/#/mlb/player/henderi01`, { waitUntil: 'networkidle' });
+    await cp.waitForTimeout(1200);
+    const custom = await cp.evaluate(() => ({
+      pts: Number((document.querySelector('.tile-value') || {}).textContent.replace(/,/g, '')),
+      rails: !!document.querySelector('.rail'),
+    }));
+    if (custom.rails) fail('scoring', 'percentile rails shown under custom weights');
+    else ok('scoring', 'percentile rails withheld under custom weights');
+
+    // Pitchers rescore through the packed row maps rather than the board's
+    // column names -- a separate path, and the one where a naming mismatch
+    // silently zeroed every inning.
+    const pitcherCheck = await cp.evaluate(async () => {
+      const rec = await getShard(resolveId('ryanno01'));
+      const w = defaultScoring();
+      const career = scorePitching(packed(rec.cp, CP), w.pitching);
+      const season = scorePitching(packed(rec.pit[0], P), w.pitching);
+      return { career, season, storedSeason: rec.pit[0][P.PTS] };
+    });
+    if (Math.abs(pitcherCheck.career - 10216) > 1) {
+      fail('scoring', `pitcher career rescored to ${pitcherCheck.career}, expected ~10216`);
+    } else ok('scoring', `packed pitcher rows rescore correctly (${Math.round(pitcherCheck.career)})`);
+
+    await cp.evaluate(() => resetScoring());
+    await cp.waitForTimeout(1200);
+    await cp.goto(`${BASE}/#/mlb/player/henderi01`, { waitUntil: 'networkidle' });
+    await cp.waitForTimeout(1200);
+    const restored = await cp.evaluate(() => ({
+      pts: Number((document.querySelector('.tile-value') || {}).textContent.replace(/,/g, '')),
+      rails: !!document.querySelector('.rail'),
+    }));
+    if (restored.pts !== 12862 || !restored.rails) {
+      fail('scoring', `reset did not restore defaults (${restored.pts}, rails ${restored.rails})`);
+    } else ok('scoring', `reset restores the league defaults (${restored.pts})`);
+    if (custom.pts <= restored.pts) fail('scoring', 'custom weights did not change the total');
+    if (errs.length) fail('scoring', errs.join('|'));
+    await ctx.close();
+  }
+
+  // ------------------------------------------------- profile / metrics / proj
+  console.log('\n— player intelligence —');
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+    const ip = await ctx.newPage();
+    const errs = [];
+    ip.on('pageerror', (e) => errs.push(e.message));
+    await ip.goto(`${BASE}/#/mlb/player/ruthba01`, { waitUntil: 'networkidle' });
+    await ip.waitForTimeout(1400);
+    const r = await ip.evaluate(() => ({
+      nick: (document.querySelector('.bio-nick') || {}).textContent || '',
+      bio: (document.querySelector('.bio p') || {}).textContent || '',
+      metrics: [...document.querySelectorAll('.metric-label')].map((n) => n.textContent),
+      proj: [...document.querySelectorAll('.panel-head h2')].some((h) => /Projected/.test(h.textContent)),
+      links: [...document.querySelectorAll('.bio-links a')].map((a) => a.textContent),
+    }));
+    if (!/Bambino/.test(r.nick)) fail('bio', `nickname missing for Ruth ("${r.nick}")`);
+    else ok('bio', `nickname: ${r.nick}`);
+    if (!/Hall of Fame/.test(r.bio) || !/home runs/.test(r.bio)) {
+      fail('bio', `bio missing honours or milestones: ${r.bio.slice(0, 90)}`);
+    } else ok('bio', 'bio carries span, honours and milestones');
+    for (const m of ['OPS', 'OPS+', 'ISO', 'BABIP']) {
+      if (!r.metrics.includes(m)) fail('metrics', `${m} missing on a batter page`);
+    }
+    if (r.metrics.length) ok('metrics', `advanced metrics: ${r.metrics.join(', ')}`);
+    if (!r.proj) fail('projection', 'no projection panel');
+    else ok('projection', 'projection panel present');
+    if (r.links.length < 2) fail('bio', 'outbound reference links missing');
+    else ok('bio', `reference links: ${r.links.join(', ')}`);
+
+    // A pitcher gets pitching metrics, not batting ones.
+    await ip.goto(`${BASE}/#/mlb/player/martipe02`, { waitUntil: 'networkidle' });
+    await ip.waitForTimeout(1200);
+    // A pitcher who also batted has both panels; the pitching one must lead.
+    const pm = await ip.evaluate(() => {
+      const first = document.querySelector('.metrics');
+      return first ? [...first.querySelectorAll('.metric-label')].map((n) => n.textContent) : [];
+    });
+    const firstPanel = await ip.$eval('.panel:has(.metrics) .panel-head h2', (n) => n.textContent);
+    if (!pm.includes('FIP') || !pm.includes('WHIP')) fail('metrics', `pitcher metrics wrong: ${pm}`);
+    else if (!/pitching/i.test(firstPanel)) fail('metrics', `pitcher led with "${firstPanel}"`);
+    else ok('metrics', `pitcher leads with ${firstPanel} (${pm.join(', ')})`);
+    if (errs.length) fail('player intel', errs.join('|'));
+    await ctx.close();
+  }
+
+  // ------------------------------------------------------------------ admin
+  console.log('\n— admin —');
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+    const ap = await ctx.newPage();
+    await ap.goto(`${BASE}/#/admin`, { waitUntil: 'networkidle' });
+    await ap.waitForTimeout(600);
+    const gated = !!(await ap.$('.admin-gate'));
+    if (!gated) fail('admin', 'admin console was not gated');
+    else ok('admin', 'console asks for a passphrase');
+    await ap.fill('.admin-gate input', 'dynasty');
+    await ap.click('.admin-gate .btn');
+    await ap.waitForTimeout(800);
+    const rows = await ap.$$eval('.admin-row', (n) => n.length);
+    if (rows < 8) fail('admin', `console rendered only ${rows} rows`);
+    else ok('admin', `console shows ${rows} settings rows`);
+    await ctx.close();
+  }
+
   // -------------------------------------------------------------- layout
   console.log('\n— layout —');
   const ROUTES = ['#/player/bondsba01', '#/player/riverma01', '#/player/ohtansh01',
                   '#/career', '#/season', '#/year/1998', '#/live', '#/compare/bondsba01,ruthba01',
                   '#/scoring', '#/about', '#/contact', '#/privacy', '#/terms',
                   '#/pricing', '#/nba/player', '#/nba/scoring', '#/nfl/career', '#/nfl/scoring'];
-  for (const [w, h, name, mobile] of [[390, 844, 'phone', true], [1400, 950, 'desktop', false]]) {
+  const DEVICES = [
+    [360, 800, 'android-small', true],   // Galaxy S-class
+    [390, 844, 'iphone', true],          // iPhone 14/15
+    [412, 915, 'pixel', true],           // Pixel
+    [430, 932, 'iphone-max', true],      // iPhone Pro Max
+    [768, 1024, 'ipad-portrait', true],  // iPad
+    [1024, 768, 'ipad-landscape', false],
+    [1280, 800, 'laptop', false],        // MacBook / Windows laptop
+    [1920, 1080, 'desktop', false],
+  ];
+  for (const [w, h, name, mobile] of DEVICES) {
     const ctx = await browser.newContext({
       viewport: { width: w, height: h }, isMobile: mobile,
       deviceScaleFactor: mobile ? 2 : 1, hasTouch: mobile,

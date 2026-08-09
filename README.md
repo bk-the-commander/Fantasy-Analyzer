@@ -1,8 +1,8 @@
-# Dynasty Sports Analytics
+# Dynasty Analytics
 
 Tools for a 12-team Yahoo H2H points, all-baseball, keeper league. Two pieces:
 
-1. **[Dynasty Sports Analytics](web/)** — the public web app. Every MLB player
+1. **[Dynasty Analytics](web/)** — the public web app. Every MLB player
    since 1871, scored in *our* league's points. Look anybody up, see their
    career and season-by-season totals, percentile rails against every qualified
    player in history, and filterable all-time leaderboards.
@@ -12,6 +12,43 @@ Tools for a 12-team Yahoo H2H points, all-baseball, keeper league. Two pieces:
 
 Both read the scoring rules from the same `fantasy_baseball/config.py`, so they
 can't drift apart.
+
+## The product
+
+Every other record book scores baseball the way baseball scores baseball. This
+one scores it **the way your league does**. Put your own weights into
+**My League** and every number on every page — player pages, all-time
+leaderboards, season boards, projections — recomputes from the raw counting
+stats that ship with each row.
+
+That is why the dataset carries full counting categories on every leaderboard
+row rather than just a points total: the rescoring happens in the browser, with
+no request and no server. Set stolen bases to 10 and Rickey Henderson passes
+Barry Bonds on the all-time board, live.
+
+Two things deliberately do *not* follow custom weights, and the site says so
+rather than quietly misleading: **PTS+** and the **percentile rails**. Both are
+calibrated against every qualified season scored the league's own way; against
+arbitrary weights they would be wrong in a way nobody could see. They hide
+until you reset to the defaults.
+
+### On top of the scoring engine
+
+- **Advanced metrics** — AVG/OBP/SLG/OPS/ISO/BABIP/BB%/K%/OPS+ for hitters,
+  ERA/WHIP/K9/BB9/HR9/FIP/ERA+ for pitchers, computed in the browser from the
+  counting stats already on the page. League-adjusted against the seasons the
+  player actually played; **not** park-adjusted, since the databank carries no
+  park factors — expect a few points of difference against Baseball-Reference.
+- **Projections** — a Marcel-style forecast (last three seasons weighted 5/4/3,
+  regressed to the league rate, age-curved off a peak of 27). Marcel is the
+  deliberately simple baseline any forecast should have to beat, not a full
+  projection system. It follows your custom weights like everything else.
+- **Profiles** — a written summary assembled from the record: span, era,
+  honours, milestones, all-time rank, birthplace. Plus curated nicknames for
+  the players who have well-established ones, and outbound links to
+  Baseball-Reference and Wikipedia.
+- **Eras carry their dates** everywhere they appear — "Dead Ball (1901–1919)",
+  never a bare label a reader has to decode.
 
 ## Leagues
 
@@ -25,6 +62,12 @@ both light and dark, so no combination falls back to another league's colour.
 | MLB | **Live** | Full dataset, 1871–2023, every view working |
 | NBA | Placeholder | Scoring rules and roster configured; no dataset yet |
 | NFL | Placeholder | Scoring rules and roster configured; no dataset yet |
+
+Colours: the brand purple is constant — logo, wordmark, footer — and only the
+data accent changes with the league. **MLB green** (the field), **NBA red**
+(the league's own mark), **NFL navy** (the shield). Each accent is defined
+twice, lighter for dark grounds and darker for light ones, because one mid-tone
+cannot clear contrast on both.
 
 NBA and NFL scoring values are **placeholders** and say so on their own Scoring
 pages. Edit them in the `SPORTS` registry at the top of `web/app.js` and every
@@ -59,6 +102,38 @@ every player — the ceiling is on depth, not on access.
 > endpoint. The plan switch on `#/pricing` exists so both experiences can be
 > seen side by side. Set `SITE.billing.checkoutUrl` to point Pro at a real
 > Stripe/Lemon Squeezy link, which replaces the demo switch.
+
+## Admin console
+
+`#/admin`, behind a passphrase set in `SITE.admin.passphrase` (currently
+`dynasty` — change it). It gives the owner:
+
+- **Plan override** — see the site exactly as a Free or a Pro customer does
+- **Scoring status** — whether custom weights are active, and a link to edit
+- **Feature flags** — ads, tip jar, live stats, checkout link, contact form,
+  each showing ON/OFF and the value behind it
+- **League status** — which sports have datasets
+- **Dataset facts** — build date, coverage, player and season counts
+
+> **It is convenience, not security.** The console runs in the browser like the
+> rest of the site, so the passphrase keeps the page out of a visitor's way and
+> protects nothing a determined person could not read from the source. Nothing
+> sensitive belongs behind it. Real admin authentication arrives with the same
+> backend that would enforce paid access.
+
+## Roadmap (beta pages)
+
+**Trends** and **Ask** are live as pages that describe their intended mechanics
+and name the data each needs — not fabricated charts. Both require a scheduled
+backend job, which is the one thing static hosting cannot provide:
+
+- **Trends** — daily most-added/dropped across platforms, rolling hot/cold
+  scored by *your* settings, buy-low candidates from the gap between rate stats
+  and point totals, and waiver fit against your roster slots.
+- **Ask** — a question box answering over the dataset *and* your league
+  settings, with every claim linked to the row it came from. It ships when
+  answers can be grounded and cited; a stats assistant that invents
+  plausible-looking numbers is worse than none.
 
 ## The web app
 

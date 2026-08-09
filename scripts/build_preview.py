@@ -145,7 +145,7 @@ def main() -> int:
     out.write_text(
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         '<meta name="color-scheme" content="light dark">\n'
-        f"<title>{meta.get('title', 'Dynasty Sports Analytics')} — Preview</title>\n"
+        f"<title>Dynasty Analytics — Preview</title>\n"
         f"<style>\n{styles}\n{BANNER_CSS}</style>\n"
         f"{theme_script.group(0) if theme_script else ''}\n"
         f"{body}\n"
