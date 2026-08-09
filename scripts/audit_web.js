@@ -28,6 +28,12 @@ async function layoutIssues(page) {
     for (const el of document.querySelectorAll('.tile-value,.rail-value,.badge')) {
       if (el.scrollWidth > el.clientWidth + 1) out.push(`clipped text: "${el.textContent.trim()}"`);
     }
+    // Node.append(null) renders the word "null". It has shipped twice; it does
+    // not ship again.
+    const body = (document.querySelector('#app') || document.body).innerText;
+    if (/(^|\s)(null|undefined|NaN)(\s|$)/.test(body)) {
+      out.push('stray null/undefined/NaN in the rendered text');
+    }
     // Text rendered in its own background colour is invisible.
     for (const el of document.querySelectorAll('.tile-value,.plink,.panel-head h2,.prose p')) {
       const cs = getComputedStyle(el);
@@ -278,9 +284,9 @@ async function checkRoleOrder(page, path, label, expectFirst) {
       else if (!d.h1.includes(expectH1)) fail('leagues', `${id}: heading was "${d.h1}"`);
       else ok('leagues', `${id} -> ${d.accent} · ${d.h1}`);
     }
-    if (new Set(Object.values(accents)).size !== 3) {
-      fail('leagues', `accents are not distinct: ${JSON.stringify(accents)}`);
-    } else ok('leagues', 'each league has its own accent');
+    if (new Set(Object.values(accents)).size !== 1) {
+      fail('leagues', `leagues repaint the interface: ${JSON.stringify(accents)}`);
+    } else ok('leagues', `one brand accent across every league (${accents.mlb})`);
 
     // Football and basketball now have real datasets: their boards must carry
     // the leaders anyone would recognise, not just render without erroring.
@@ -584,9 +590,152 @@ async function checkRoleOrder(page, path, label, expectFirst) {
     await ctx.close();
   }
 
+  // ------------------------------------------------------------ navigation
+  console.log('\n— control panel —');
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+    const np = await ctx.newPage();
+    const errs = [];
+    np.on('pageerror', (e) => errs.push(e.message));
+    await np.goto(`${BASE}/#/home`, { waitUntil: 'networkidle' });
+    await np.waitForTimeout(2500);
+
+    const groups = await np.$$eval('.nav-group', (n) => n.length);
+    if (groups < 4) fail('nav', `only ${groups} folders in the panel`);
+    else ok('nav', `${groups} folders in the control panel`);
+
+    // A collapsed folder must actually hide its contents, and reopen.
+    const before2 = await np.$$eval('.nav-items:not([hidden]) .nav-item', (n) => n.length);
+    await np.click('.nav-group >> nth=0');
+    await np.waitForTimeout(300);
+    const collapsed = await np.$$eval('.nav-items:not([hidden]) .nav-item', (n) => n.length);
+    await np.click('.nav-group >> nth=0');
+    await np.waitForTimeout(300);
+    const reopened = await np.$$eval('.nav-items:not([hidden]) .nav-item', (n) => n.length);
+    if (collapsed >= before2 || reopened !== before2) {
+      fail('nav', `folder toggle broken (${before2} -> ${collapsed} -> ${reopened})`);
+    } else ok('nav', `folders collapse and reopen (${before2} -> ${collapsed} -> ${reopened})`);
+
+    // The open folder should follow you to the page you land on.
+    await np.goto(`${BASE}/#/health`, { waitUntil: 'networkidle' });
+    await np.waitForTimeout(1500);
+    const active = await np.$eval('.nav-item.active .nav-label', (n) => n.textContent).catch(() => null);
+    if (active !== 'System Health') fail('nav', `active item was "${active}" on the health page`);
+    else ok('nav', 'the panel opens the folder holding the current page');
+
+    // League-scoped links must carry the active league.
+    await np.goto(`${BASE}/#/nba/career`, { waitUntil: 'networkidle' });
+    await np.waitForTimeout(1800);
+    const href = await np.$eval('.nav-item[data-view="career"]', (n) => n.getAttribute('href'));
+    if (href !== '#/nba/career') fail('nav', `scoped link was ${href} under basketball`);
+    else ok('nav', `league-scoped links follow the switcher (${href})`);
+
+    // The drawer: hidden on a phone, opens on the button, closes on a pick.
+    const mob = await browser.newContext({
+      viewport: { width: 390, height: 844 }, isMobile: true,
+      deviceScaleFactor: 2, hasTouch: true,
+    });
+    const mp = await mob.newPage();
+    await mp.goto(`${BASE}/#/home`, { waitUntil: 'networkidle' });
+    await mp.waitForTimeout(2200);
+    const hidden = await mp.$eval('.sidebar', (n) => n.getBoundingClientRect().right <= 1);
+    await mp.click('#menuToggle');
+    await mp.waitForTimeout(400);
+    const shown = await mp.$eval('.sidebar', (n) => n.getBoundingClientRect().left >= 0);
+    await mp.click('.nav-item[data-view="career"]');
+    await mp.waitForTimeout(1600);
+    const closed = await mp.evaluate(() => !document.body.classList.contains('drawer-open'));
+    if (!hidden || !shown || !closed) {
+      fail('nav', `drawer: hidden=${hidden} opens=${shown} closesOnPick=${closed}`);
+    } else ok('nav', 'drawer hides, opens on the button, closes after a pick');
+    const header = await mp.$eval('.topbar', (n) => Math.round(n.getBoundingClientRect().height));
+    if (header > 80) fail('nav', `phone header is ${header}px tall`);
+    else ok('nav', `phone header is ${header}px — content starts near the top`);
+    await mob.close();
+    if (errs.length) fail('nav', errs.slice(0, 2).join(' | '));
+    await ctx.close();
+  }
+
+  // -------------------------------------------------------- theme + clicks
+  console.log('\n— theme and controls —');
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+    const tp = await ctx.newPage();
+    const errs = [];
+    tp.on('pageerror', (e) => errs.push(e.message));
+    tp.on('console', (m) => {
+      const from = (m.location() && m.location().url) || '';
+      if (!from.includes('statsapi') && m.type() === 'error') errs.push(m.text());
+    });
+
+    await tp.goto(`${BASE}/#/home`, { waitUntil: 'networkidle' });
+    await tp.waitForTimeout(2500);
+    const cycle = [];
+    for (let i = 0; i < 4; i++) {
+      await tp.click('#themeToggle');
+      await tp.waitForTimeout(180);
+      cycle.push(await tp.evaluate(() => document.documentElement.dataset.theme));
+    }
+    const states = new Set(cycle);
+    if (states.size !== 2 || states.has('auto')) {
+      fail('theme', `toggle produced ${states.size} states: ${cycle.join(',')}`);
+    } else ok('theme', `toggle is two-state (${cycle.join(' -> ')})`);
+
+    // Click every control on every view and require that nothing throws and
+    // nothing blanks the page. A button that silently does nothing is a bug a
+    // render-only check cannot see.
+    const CLICKABLE = ['#/home', '#/mlb/player/bondsba01', '#/mlb/career', '#/mlb/season',
+                       '#/nfl/career', '#/nba/career', '#/settings', '#/pricing',
+                       '#/mlb/chat', '#/health', '#/scoring', '#/trends'];
+    let clicked = 0, dead = [];
+    for (const route of CLICKABLE) {
+      await tp.goto(`${BASE}/${route}`, { waitUntil: 'networkidle' });
+      await tp.waitForTimeout(1200);
+      const buttons = await tp.$$('#app button:not([disabled])');
+      for (const btn of buttons.slice(0, 12)) {
+        const label = (await btn.textContent() || '').trim().slice(0, 24);
+        try {
+          await btn.click({ timeout: 3000 });
+          await tp.waitForTimeout(220);
+          const alive = await tp.evaluate(() =>
+            document.querySelector('#app').innerText.trim().length > 20);
+          if (!alive) dead.push(`${route} → "${label}" blanked the view`);
+          clicked++;
+        } catch (err) {
+          // A control that scrolled out of reach is not a defect; a detached
+          // or unclickable one is.
+          const benign = /not visible|outside of the viewport|intercepts|not attached/i;
+          if (!benign.test(err.message)) {
+            dead.push(`${route} → "${label}": ${err.message.split('\n')[0].slice(0, 60)}`);
+          }
+        }
+        await tp.goto(`${BASE}/${route}`, { waitUntil: 'networkidle' });
+        await tp.waitForTimeout(700);
+      }
+    }
+    if (dead.length) fail('controls', dead.slice(0, 4).join(' | '));
+    else ok('controls', `${clicked} buttons clicked across ${CLICKABLE.length} views, none dead`);
+
+    // Internal links must all resolve to a view that renders something.
+    await tp.goto(`${BASE}/#/home`, { waitUntil: 'networkidle' });
+    await tp.waitForTimeout(2500);
+    const hrefs = await tp.$$eval('a[href^="#/"]', (n) => [...new Set(n.map((a) => a.getAttribute('href')))]);
+    const broken = [];
+    for (const href of hrefs.slice(0, 40)) {
+      await tp.goto(`${BASE}/${href}`, { waitUntil: 'networkidle' });
+      await tp.waitForTimeout(700);
+      const text = await tp.evaluate(() => document.querySelector('#app').innerText.trim());
+      if (text.length < 20 || /went wrong/i.test(text)) broken.push(href);
+    }
+    if (broken.length) fail('links', `dead links: ${broken.join(', ')}`);
+    else ok('links', `${Math.min(hrefs.length, 40)} internal links all render`);
+    if (errs.length) fail('controls', errs.slice(0, 2).join(' | '));
+    await ctx.close();
+  }
+
   // -------------------------------------------------------------- layout
   console.log('\n— layout —');
-  const ROUTES = ['#/player/bondsba01', '#/player/riverma01', '#/player/ohtansh01',
+  const ROUTES = ['#/home', '#/player/bondsba01', '#/player/riverma01', '#/player/ohtansh01',
                   '#/career', '#/season', '#/year/1998', '#/live', '#/compare/bondsba01,ruthba01',
                   '#/scoring', '#/about', '#/contact', '#/privacy', '#/terms',
                   '#/pricing', '#/nba/player', '#/nba/scoring', '#/nfl/career', '#/nfl/scoring',

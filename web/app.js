@@ -98,6 +98,7 @@ const SPORTS = {
     id: 'mlb', short: 'MLB', league: 'MLB', name: 'Baseball',
     status: 'live', dataDir: 'data',
     tagline: 'Every MLB player since 1871, scored in your league’s points.',
+    coverage: '1871–2023',
     searchPlaceholder: 'Search any player, 1871–present…',
     emoji: '⚾',
     // Scoring and roster come from meta.json, which the data build writes
@@ -108,6 +109,7 @@ const SPORTS = {
     id: 'nba', short: 'NBA', league: 'NBA', name: 'Basketball',
     status: 'live', generic: true, dataDir: 'data-nba',
     tagline: 'Every NBA player, scored in your league’s points.',
+    coverage: '1996–2025',
     searchPlaceholder: 'Search any NBA player…',
 
     emoji: '🏀',
@@ -117,6 +119,7 @@ const SPORTS = {
     id: 'nfl', short: 'NFL', league: 'NFL', name: 'Football',
     status: 'live', generic: true, dataDir: 'data-nfl',
     tagline: 'Every NFL player, scored in your league’s points.',
+    coverage: '1999–2024',
     searchPlaceholder: 'Search any NFL player…',
 
     emoji: '🏈',
@@ -319,9 +322,10 @@ async function getShard(id) {
   if (EMBEDDED && EMBEDDED[`${state.sport}:players`]) {
     return EMBEDDED[`${state.sport}:players`][String(id)] || null;
   }
-  const s = id % state.meta.shards;
-  if (!state.shards.has(s)) state.shards.set(s, await getJSON(`players/${s}.json`));
-  return state.shards.get(s)[String(id)];
+  const n = id % state.meta.shards;
+  const key = `${state.sport}:${n}`;
+  if (!state.shards.has(key)) state.shards.set(key, await getJSON(`players/${n}.json`));
+  return state.shards.get(key)[String(id)];
 }
 
 async function getBoard(rawName) {
@@ -421,43 +425,182 @@ function pctile(group, metric, v) {
 // the page never flashes the wrong theme.
 
 const THEME_KEY = 'fa-theme';
-const THEME_ICON = { auto: '◐', light: '☀', dark: '☾' };
 
-const themePref = () => {
-  try { return localStorage.getItem(THEME_KEY) || 'auto'; } catch { return 'auto'; }
-};
-
-const resolveTheme = (pref) => {
-  if (pref === 'light' || pref === 'dark') return pref;
-  const hour = new Date().getHours();
-  return (hour >= 7 && hour < 19) ? 'light' : 'dark';
-};
+/** Light or dark. Nothing else -- a switch should switch, and a third "auto"
+ *  state made the button's current meaning impossible to read at a glance.
+ *  First visit follows the device's own setting, then the choice sticks. */
+function themePref() {
+  try {
+    const stored = localStorage.getItem(THEME_KEY);
+    if (stored === 'light' || stored === 'dark') return stored;
+  } catch { /* private mode */ }
+  return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
 
 function applyTheme() {
-  const pref = themePref();
-  const resolved = resolveTheme(pref);
-  document.documentElement.setAttribute('data-theme', resolved);
+  const theme = themePref();
+  document.documentElement.setAttribute('data-theme', theme);
   const btn = $('#themeToggle');
   if (btn) {
-    btn.textContent = THEME_ICON[pref];
-    btn.title = pref === 'auto'
-      ? `Theme: auto (${resolved} right now) — click to override`
-      : `Theme: ${pref} — click to change`;
+    btn.textContent = theme === 'light' ? '☾' : '☀';
+    btn.title = theme === 'light' ? 'Switch to dark' : 'Switch to light';
+    btn.setAttribute('aria-label', btn.title);
   }
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', resolved === 'light' ? '#f7f5fb' : '#0b0810');
+  if (meta) meta.setAttribute('content', theme === 'light' ? '#f6f6f8' : '#0a0810');
 }
 
 function initTheme() {
-  const order = ['auto', 'light', 'dark'];
   $('#themeToggle')?.addEventListener('click', () => {
-    const next = order[(order.indexOf(themePref()) + 1) % order.length];
+    const next = themePref() === 'light' ? 'dark' : 'light';
     try { localStorage.setItem(THEME_KEY, next); } catch { /* private mode */ }
     applyTheme();
   });
-  // Follow the clock across sunset without a reload.
-  setInterval(() => { if (themePref() === 'auto') applyTheme(); }, 5 * 60 * 1000);
   applyTheme();
+}
+
+// ------------------------------------------------------------- navigation
+//
+// Twelve destinations across the top gave every one of them equal weight and
+// none of them any explanation. They live in the left panel now, in folders
+// that match how someone actually thinks about the product: look things up,
+// set up my league, tools, account, and the owner's own pages.
+//
+// `scoped: true` marks a view that belongs to a league, so its link carries
+// the active one -- #/nba/career rather than a bare #/career.
+
+const NAV = [
+  { id: 'explore', label: 'Explore', icon: '🔎', open: true, items: [
+    ['home',    'Home',            '🏠', false, 'Highlights across all three leagues'],
+    ['player',  'Player Lookup',   '👤', true,  'Search anyone and see their career'],
+    ['career',  'Career Leaders',  '🏆', true,  'Every career ranked by your points'],
+    ['season',  'Season Leaders',  '📈', true,  'The best individual seasons ever'],
+    ['year',    'Year Explorer',   '📅', true,  'Any single season, top to bottom'],
+    ['live',    'This Season',     '🔴', true,  'Current-season totals, live'],
+    ['compare', 'Compare',         '⚖️', true,  'Two careers side by side'],
+  ] },
+  { id: 'league', label: 'My League', icon: '⚙️', open: true, items: [
+    ['settings', 'Scoring Settings', '🎛️', false, 'Set your weights — everything recomputes'],
+    ['scoring',  'Current Rules',    '📋', true,  'What the site is scoring with right now'],
+  ] },
+  { id: 'tools', label: 'Tools', icon: '🧰', open: false, items: [
+    ['chat',   'Ask AI',  '💬', true,  'Questions answered from this data'],
+    ['trends', 'Trends',  '📊', false, 'Waiver and hot/cold — in development'],
+  ] },
+  { id: 'account', label: 'Account', icon: '👋', open: false, items: [
+    ['pricing', 'Plans',   '💳', false, 'Free vs Pro'],
+    ['about',   'About',   'ℹ️', false, 'What this is and where the data comes from'],
+    ['contact', 'Contact', '✉️', false, 'Corrections and enquiries'],
+  ] },
+  { id: 'owner', label: 'Owner', icon: '🔧', open: false, owner: true, items: [
+    ['health', 'System Health', '🩺', false, 'What is running and what needs work'],
+    ['admin',  'Admin Console', '🔐', false, 'Plan override and feature flags'],
+  ] },
+];
+
+const NAV_OPEN_KEY = 'da-nav-open';
+
+function openGroups() {
+  try {
+    const raw = localStorage.getItem(NAV_OPEN_KEY);
+    if (raw) return new Set(JSON.parse(raw));
+  } catch { /* private mode */ }
+  return new Set(NAV.filter((g) => g.open).map((g) => g.id));
+}
+
+function saveOpenGroups(set) {
+  try { localStorage.setItem(NAV_OPEN_KEY, JSON.stringify([...set])); }
+  catch { /* private mode */ }
+}
+
+function buildSidebar() {
+  const nav = $('#sideNav');
+  if (!nav) return;
+  const open = openGroups();
+
+  nav.replaceChildren(...NAV.map((group) => {
+    const list = el('div', { class: 'nav-items', id: `nav-${group.id}` },
+      group.items.map(([view, label, icon, scoped, blurb]) =>
+        el('a', {
+          class: `nav-item${group.owner ? ' owner' : ''}`,
+          href: scoped ? `#/${state.sport}/${view}` : `#/${view}`,
+          'data-view': view,
+          'data-scoped': scoped ? '1' : null,
+          title: blurb,
+        },
+          el('span', { class: 'nav-icon' }, icon),
+          el('span', { class: 'nav-text' },
+            el('span', { class: 'nav-label' }, label),
+            el('span', { class: 'nav-blurb' }, blurb)))));
+
+    const isOpen = open.has(group.id);
+    list.hidden = !isOpen;
+
+    const toggle = el('button', {
+      class: `nav-group${group.owner ? ' owner' : ''}${isOpen ? ' open' : ''}`,
+      type: 'button',
+      'aria-expanded': String(isOpen),
+      'aria-controls': `nav-${group.id}`,
+      onclick: () => {
+        const next = openGroups();
+        if (next.has(group.id)) next.delete(group.id); else next.add(group.id);
+        saveOpenGroups(next);
+        buildSidebar();
+        markActiveNav();
+      },
+    },
+      el('span', { class: 'nav-icon' }, group.icon),
+      el('span', { class: 'nav-group-label' }, group.label),
+      el('span', { class: 'nav-caret' }, '▸'));
+
+    return el('div', { class: 'nav-group-wrap' }, toggle, list);
+  }));
+  markActiveNav();
+}
+
+/** Highlight the current view. `autoOpen` reveals the folder holding it --
+ *  true when the route changes, false on a repaint, so collapsing the folder
+ *  you are standing in actually collapses it. */
+function markActiveNav(autoOpen = false) {
+  const raw = location.hash.replace(/^#\/?/, '') || 'home';
+  const parts = raw.split('?')[0].split('/');
+  const view = (SPORTS[parts[0]] ? parts[1] : parts[0]) || 'home';
+  document.querySelectorAll('.nav-item').forEach((a) => {
+    a.classList.toggle('active', a.dataset.view === view);
+  });
+  if (!autoOpen) return;
+  const group = NAV.find((g) => g.items.some(([v]) => v === view));
+  if (group) {
+    const set = openGroups();
+    if (!set.has(group.id)) {
+      set.add(group.id);
+      saveOpenGroups(set);
+      buildSidebar();
+    }
+  }
+}
+
+function initDrawer() {
+  const body = document.body;
+  const scrim = $('#drawerScrim');
+  const btn = $('#menuToggle');
+  const close = () => {
+    body.classList.remove('drawer-open');
+    scrim.hidden = true;
+    btn?.setAttribute('aria-expanded', 'false');
+  };
+  btn?.addEventListener('click', () => {
+    const opening = !body.classList.contains('drawer-open');
+    body.classList.toggle('drawer-open', opening);
+    scrim.hidden = !opening;
+    btn.setAttribute('aria-expanded', String(opening));
+  });
+  scrim?.addEventListener('click', close);
+  // Picking a destination should get you there, not leave the menu in the way.
+  $('#sidebar')?.addEventListener('click', (e) => {
+    if (e.target.closest('a')) close();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
 }
 
 // ------------------------------------------------------- sport + tier chrome
@@ -471,16 +614,20 @@ async function applySport(id) {
   }
   document.documentElement.setAttribute('data-sport', s.id);
 
+  const context = $('#topbarContext');
+  if (context) {
+    context.textContent = state.meta
+      ? `${s.emoji} ${s.league} · ${state.meta.seasons[0]}–${state.meta.seasons[1]}`
+      : `${s.emoji} ${s.league}`;
+  }
   const search = $('#globalSearch');
-  if (search) search.placeholder = s.searchPlaceholder;
-  const sub = $('.brand-sub em');
-  if (sub) sub.textContent = `${s.league} · scored in your league’s points`;
+  if (search) search.placeholder = `Search any ${s.league} player…`;
 
   document.querySelectorAll('#sportSwitch button').forEach((b) => {
     b.classList.toggle('on', b.dataset.sport === s.id);
   });
-  // Every nav link carries the sport, so switching leagues keeps your place.
-  document.querySelectorAll('#tabs a').forEach((a) => {
+  // League-scoped links carry the active league, so switching keeps your place.
+  document.querySelectorAll('.nav-item[data-scoped]').forEach((a) => {
     a.setAttribute('href', `#/${s.id}/${a.dataset.view}`);
   });
   const meta = document.querySelector('meta[name="theme-color"]');
@@ -1872,7 +2019,7 @@ async function viewLeaders(kind) {
       el('option', { value: '' }, 'Any'),
       ['C', '1B', '2B', '3B', 'SS', 'OF', 'DH'].map((p) => el('option', { value: p }, p))));
 
-  filters.append(
+  mount(filters,
     el('div', { class: 'field' }, el('label', {}, 'Group'), seg),
     el('div', { class: 'field' }, el('label', {}, 'Era'),
       eraSelect((e) => { opts.era = ERAS.indexOf(e); draw(); }, 0)),
@@ -2814,7 +2961,8 @@ async function viewGenericPlayer(key) {
       genericSuggestions());
   }
 
-  const p = await getShard(id);
+  const raw = await getShard(id);
+  const p = raw && Array.isArray(raw.s) && Array.isArray(raw.yrs) ? raw : null;
   if (!p) {
     return app().replaceChildren(el('div', { class: 'empty-state' },
       el('h3', {}, 'Not in this dataset'),
@@ -2915,8 +3063,85 @@ async function viewGenericPlayer(key) {
     statTable(logRows, cols, { sortKey: null }),
     watermark()));
 
+  // --- profile, teams, injuries ------------------------------------------
+  if (p.bio) {
+    const b = p.bio;
+    const facts = [];
+    if (b.pos) facts.push(['Position', b.pos]);
+    if (b.jersey) facts.push(['Jersey', `#${b.jersey}`]);
+    if (b.ht) facts.push(['Height', `${Math.floor(b.ht / 12)}'${b.ht % 12}"`]);
+    if (b.wt) facts.push(['Weight', `${b.wt} lb`]);
+    if (b.college) facts.push(['College', b.college]);
+    if (b.dyear) {
+      facts.push(['Drafted', b.dround
+        ? `${b.dyear} · round ${b.dround}, pick ${b.dpick || '—'}${b.dteam ? ` (${b.dteam})` : ''}`
+        : String(b.dyear)]);
+    } else if (b.rookie) {
+      facts.push(['Rookie season', String(b.rookie)]);
+    }
+    if (b.born) facts.push(['Born', b.born]);
+    if (facts.length) {
+      container.append(el('div', { class: 'panel' },
+        el('div', { class: 'panel-head' },
+          el('h2', {}, 'Profile'),
+          el('span', { class: 'hint' }, 'From the league’s own player register')),
+        el('div', { class: 'factgrid' },
+          facts.map(([k, v]) => el('div', { class: 'fact' },
+            el('div', { class: 'fact-key' }, k),
+            el('div', { class: 'fact-val' }, v)))),
+        watermark()));
+    }
+  }
+
+  if (p.teams?.length) {
+    container.append(el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' },
+        el('h2', {}, 'Team history'),
+        el('span', { class: 'hint' }, `${p.teams.length} club${p.teams.length === 1 ? '' : 's'}`)),
+      el('div', { class: 'team-track' },
+        rows.map((r) => el('div', { class: 'team-stop' },
+          el('div', { class: 'team-year' }, String(r[GEN.YEAR])),
+          el('div', { class: 'team-code' }, r[GEN.TEAM] || '—'))))));
+  }
+
+  if (p.inj) {
+    const inj = p.inj;
+    container.append(el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' },
+        el('h2', {}, 'Injury history'),
+        el('span', { class: 'hint' },
+          `${inj.seasons.length} season${inj.seasons.length === 1 ? '' : 's'} with reports`)),
+      el('div', { class: 'tiles' },
+        tile('Report weeks', num(inj.n), 'times on an injury report', true),
+        tile('Ruled out', num(inj.out), 'weeks listed Out'),
+        tile('Seasons affected', num(inj.seasons.length),
+          `${inj.seasons[0]}–${inj.seasons[inj.seasons.length - 1]}`),
+        inj.common[0] ? tile('Most common', inj.common[0][0],
+          `${inj.common[0][1]} report${inj.common[0][1] === 1 ? '' : 's'}`) : null),
+      inj.common.length ? el('div', { class: 'chip-row' },
+        inj.common.map(([what, n]) => el('span', { class: 'chip static' }, `${what} · ${n}`))) : null,
+      el('div', { class: 'table-scroll' },
+        statTable(inj.log.slice().reverse().map((e) => ({
+          season: e[0], week: e[1], injury: e[2] || '—', status: e[3] || '—',
+        })), [
+          { key: 'season', label: 'Season' },
+          { key: 'week', label: 'Week' },
+          { key: 'injury', label: 'Injury', cls: 'txt' },
+          { key: 'status', label: 'Game status', cls: 'txt' },
+        ], { limit: 12, page: 12 })),
+      watermark()));
+  } else if (state.meta.has_injuries) {
+    container.append(el('div', { class: 'note', html:
+      '<b>No injury reports on file.</b> The league publishes weekly reports ' +
+      'from 2009 onward; this player has none in that window.' }));
+  }
+
   container.append(el('div', { class: 'note', html:
-    `<b>Coverage.</b> ${state.meta.coverage_note} Source: ${state.meta.source}.` }));
+    `<b>Coverage.</b> ${state.meta.coverage_note} Source: ${state.meta.source}.` +
+    (state.meta.has_injuries ? '' :
+      ' No public injury or transaction feed is available for this league without ' +
+      'scraping a site whose terms forbid it, so those panels are absent rather ' +
+      'than guessed.') }));
 }
 
 function genericSuggestions() {
@@ -3006,7 +3231,7 @@ async function viewGenericBoard(kind) {
         : null);
   };
 
-  filters.append(
+  mount(filters,
     positions.length ? el('div', { class: 'field' }, el('label', {}, 'Position'),
       el('select', { onchange: (e) => { opts.pos = e.target.value; draw(); } },
         el('option', { value: '' }, 'Any'),
@@ -3124,8 +3349,8 @@ function viewGenericSettings() {
       el('h1', {}, `Your ${s.league} League Settings`),
       el('p', {}, 'Set your own weights and every ' + s.league +
         ' page recomputes to what those players would have been worth to you.')),
-    genCustom() ? el('div', { class: 'note', html:
-      `<b>Custom ${s.league} scoring is on.</b>` }) : null,
+    el('div', {}, genCustom() ? el('div', { class: 'note', html:
+      `<b>Custom ${s.league} scoring is on.</b>` }) : null),
     el('div', { class: 'panel' },
       el('div', { class: 'panel-head' },
         el('h2', {}, 'Scoring'),
@@ -3218,11 +3443,11 @@ function viewSettings() {
         'leaderboards, seasons, projections — recomputes to what those players ' +
         'would have been worth in your league.')),
 
-    usingCustomScoring()
+    el('div', {}, usingCustomScoring()
       ? el('div', { class: 'note', html:
           '<b>Custom scoring is on.</b> Every points figure on the site is ' +
           'currently computed with your weights, not the defaults.' })
-      : null,
+      : null),
 
     el('div', { class: 'panel' },
       el('div', { class: 'panel-head' },
@@ -3342,6 +3567,141 @@ function viewPricing() {
       'paywall is where that licence starts to bite.' }));
 
   mount(app(), adSlot('inline'));
+}
+
+// ---------------------------------------------------------------- home page
+//
+// Everything here is computed from the datasets on this site. It is not news:
+// no wire feed is reachable from a static page, and inventing headlines would
+// be worse than having none. What it can do honestly is surface the things a
+// fantasy manager would actually click -- record seasons, era leaders, the
+// players whose value swings most under different scoring.
+
+async function viewHome() {
+  const cards = [];
+  const s = sport();
+
+  app().replaceChildren(
+    el('div', { class: 'hero' },
+      el('h1', { class: 'hero-title' },
+        'Every player. ', el('em', {}, 'Your'), ' scoring.'),
+      el('p', { class: 'hero-sub' },
+        'Put your league’s rules in once and see how anyone in the record ' +
+        'book would have scored for you — across baseball, football and basketball.'),
+      el('div', { class: 'hero-actions' },
+        el('a', { class: 'btn primary', href: '#/settings' }, 'Set your league scoring'),
+        el('a', { class: 'btn', href: `#/${s.id}/career` }, 'Browse all-time leaders'),
+        el('a', { class: 'btn', href: `#/${s.id}/chat` }, 'Ask a question')),
+      el('div', { class: 'hero-leagues' },
+        SPORT_IDS.map((id) => el('a', { class: 'hero-league', href: `#/${id}/player` },
+          el('span', { class: 'hero-ball' }, SPORTS[id].emoji),
+          el('span', {}, SPORTS[id].league),
+          el('small', {}, SPORTS[id].coverage || ''))))),
+    el('div', { class: 'home-grid', id: 'homeGrid' },
+      el('div', { class: 'boot' }, el('div', { class: 'boot-spinner' }))));
+
+  // Pull the headline facts from each league in parallel.
+  const grid = $('#homeGrid');
+  const feed = [];
+
+  for (const id of SPORT_IDS) {
+    try {
+      await loadSportData(id);
+      const before = state.sport;
+      state.sport = id;
+      useSportData(id);
+      const meta = state.meta;
+      const generic = SPORTS[id].generic;
+      const careerBoard = await getBoard(generic ? 'lb_career' : 'lb_career_batting');
+      const seasonBoard = await getBoard(generic ? 'lb_season' : 'lb_season_batting');
+      const topCareer = careerBoard.slice(0, 3);
+      const topSeason = [...seasonBoard].sort((a, b) => b.pts - a.pts).slice(0, 3);
+      const latest = Math.max(...seasonBoard.map((r) => r.year));
+      const latestBest = seasonBoard.filter((r) => r.year === latest)
+        .sort((a, b) => b.pts - a.pts).slice(0, 3);
+
+      feed.push({
+        id, league: SPORTS[id].league, emoji: SPORTS[id].emoji, meta,
+        topCareer, topSeason, latest, latestBest,
+        href: `#/${id}/career`,
+      });
+      state.sport = before;
+      useSportData(before);
+    } catch (err) {
+      console.error('home feed', id, err);
+    }
+  }
+
+  const list = (rows, valueKey) => el('ol', { class: 'home-list' },
+    rows.map((r) => el('li', {},
+      el('a', { class: 'plink', href: `#/${r.__sport}/player/${r.__pid}` }, r.name),
+      el('span', {}, num(r[valueKey], 0)))));
+
+  const decorate = (rows, sportId) => rows.map((r) => {
+    const entry = state.sports[sportId];
+    const i = entry.idPos.get(r.id);
+    return { ...r, __sport: sportId, __pid: entry.index.pid[i] };
+  });
+
+  for (const f of feed) {
+    cards.push(el('article', { class: 'home-card' },
+      el('div', { class: 'home-card-head' },
+        el('span', { class: 'home-ball' }, f.emoji),
+        el('div', {},
+          el('h3', {}, `${f.league} — all-time points`),
+          el('span', { class: 'home-meta' },
+            `${f.meta.seasons[0]}–${f.meta.seasons[1]} · ${num(f.meta.players)} players`))),
+      list(decorate(f.topCareer, f.id), 'pts'),
+      el('a', { class: 'home-more', href: f.href }, 'Full leaderboard →')));
+
+    cards.push(el('article', { class: 'home-card' },
+      el('div', { class: 'home-card-head' },
+        el('span', { class: 'home-ball' }, f.emoji),
+        el('div', {},
+          el('h3', {}, `${f.league} — best single seasons`),
+          el('span', { class: 'home-meta' }, 'The highest-scoring years on record'))),
+      list(decorate(f.topSeason, f.id), 'pts'),
+      el('a', { class: 'home-more', href: `#/${f.id}/season` }, 'Season leaders →')));
+
+    cards.push(el('article', { class: 'home-card' },
+      el('div', { class: 'home-card-head' },
+        el('span', { class: 'home-ball' }, f.emoji),
+        el('div', {},
+          el('h3', {}, `${f.league} — most recent season (${f.latest})`),
+          el('span', { class: 'home-meta' }, 'The newest year this dataset covers'))),
+      list(decorate(f.latestBest, f.id), 'pts'),
+      el('a', { class: 'home-more', href: `#/${f.id}/year/${f.latest}` }, `Explore ${f.latest} →`)));
+  }
+
+  cards.push(el('article', { class: 'home-card wide' },
+    el('div', { class: 'home-card-head' },
+      el('span', { class: 'home-ball' }, '⚙️'),
+      el('div', {},
+        el('h3', {}, 'Why the numbers here differ from everywhere else'),
+        el('span', { class: 'home-meta' }, 'How to read this site'))),
+    el('div', { class: 'home-body' },
+      el('p', {}, 'Every total on this site is fantasy points under a scoring ' +
+        'system you control — not the sport’s own statistics. Change what a ' +
+        'stolen base or a reception is worth and the all-time order changes ' +
+        'with it. That is the point.'),
+      el('p', {}, 'Set stolen bases to 10 in ',
+        el('a', { href: '#/settings' }, 'My League'),
+        ' and Rickey Henderson passes Barry Bonds on the baseball board, live.')),
+    el('a', { class: 'home-more', href: '#/settings' }, 'Set your scoring →')));
+
+  cards.push(el('article', { class: 'home-card wide' },
+    el('div', { class: 'home-card-head' },
+      el('span', { class: 'home-ball' }, '📅'),
+      el('div', {},
+        el('h3', {}, 'What this data does and does not cover'),
+        el('span', { class: 'home-meta' }, 'Stated plainly, per league'))),
+    el('div', { class: 'home-body' },
+      feed.map((f) => el('p', { html:
+        `<b>${f.emoji} ${f.league} ${f.meta.seasons[0]}–${f.meta.seasons[1]}.</b> ` +
+        (f.meta.coverage_note || 'Complete for every season in that range.') })))));
+
+  grid.replaceChildren(...cards);
+  mount(grid.parentNode, adSlot('inline'));
 }
 
 // ------------------------------------------------------------ health check
@@ -3836,13 +4196,23 @@ function viewAdmin() {
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
     return app().replaceChildren(
-      el('div', { class: 'view-head' }, el('h1', {}, 'Admin')),
+      el('div', { class: 'view-head' },
+        el('h1', {}, 'Admin Console'),
+        el('p', {}, 'The owner’s view: plan override, feature flags, league ' +
+          'status and dataset facts. Customers never see this page.')),
       el('div', { class: 'panel' },
-        el('div', { class: 'panel-head' }, el('h2', {}, 'Sign in')),
+        el('div', { class: 'panel-head' },
+          el('h2', {}, 'Sign in'),
+          el('span', { class: 'hint' }, 'Passphrase set in SITE.admin')),
         el('div', { class: 'admin-gate' },
           input,
           el('button', { class: 'btn primary', onclick: submit }, 'Enter'),
-          msg)));
+          msg),
+        el('div', { class: 'note', html:
+          '<b>Convenience, not security.</b> This gate runs in the browser like ' +
+          'the rest of the site: it keeps the page out of a visitor’s way and ' +
+          'protects nothing a determined person could not read from the source. ' +
+          'Nothing sensitive belongs behind it.' })));
   }
 
   const flag = (label, on, hint) => el('div', { class: 'admin-row' },
@@ -4075,7 +4445,7 @@ function go(hash) {
 }
 
 async function route() {
-  const raw = location.hash.replace(/^#\/?/, '') || 'player';
+  const raw = location.hash.replace(/^#\/?/, '') || 'home';
   const [path] = raw.split('?');
   const parts = path.split('/');
 
@@ -4088,13 +4458,13 @@ async function route() {
 
   if (sportId !== state.sport || !state.meta) await applySport(sportId);
 
-  document.querySelectorAll('#tabs a').forEach((a) =>
-    a.classList.toggle('active', a.dataset.view === (view || 'player')));
+  markActiveNav(true);
   window.scrollTo({ top: 0 });
 
   // Data views need a dataset. Reference and account pages work everywhere.
   const generic = sport().generic === true;
   const dataViews = ['player', 'career', 'season', 'year', 'live', 'compare'];
+  if (view === 'home') { await viewHome(); return; }
   if (generic && ['live', 'compare'].includes(view)) {
     return app().replaceChildren(
       el('div', { class: 'view-head' },
@@ -4141,8 +4511,9 @@ async function route() {
       case 'ask':     viewAsk(); break;
       case 'admin':   viewAdmin(); break;
       case 'health':  await viewHealth(); break;
+      case 'home':    await viewHome(); break;
       case 'chat':    viewChat(); break;
-      default:        await viewPlayer(null);
+      default:        await viewHome();
     }
   } catch (err) {
     console.error(err);
@@ -4160,6 +4531,8 @@ async function boot() {
     await loadSportData('mlb');
     useSportData('mlb');
 
+    buildSidebar();
+    initDrawer();
     initSportSwitch();
     await applySport(state.sport);
     updateTierBadge();

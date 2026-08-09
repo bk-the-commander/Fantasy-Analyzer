@@ -17,32 +17,32 @@
 /* ------------------------------------------------------------------ tokens */
 :root,
 :root[data-theme="dark"] {
-  --bg:            #0b0810;
-  --bg-glow-1:     rgba(124, 58, 237, .20);
-  --bg-glow-2:     rgba(168, 85, 247, .13);
-  --surface:       #16111f;
-  --surface-2:     #1d1729;
-  --surface-3:     #251d35;
-  --surface-sunk:  rgba(0, 0, 0, .22);
-  --topbar-bg:     rgba(11, 8, 16, .88);
+  --bg:            #0a0810;
+  --bg-glow-1:     rgba(124, 58, 237, .16);
+  --bg-glow-2:     rgba(167, 139, 250, .09);
+  --surface:       #141119;
+  --surface-2:     #1b1724;
+  --surface-3:     #241f30;
+  --surface-sunk:  rgba(0, 0, 0, .24);
+  --topbar-bg:     rgba(10, 8, 16, .90);
 
-  --border:        #2b2340;
-  --border-strong: #3a3050;
+  --border:        #272232;
+  --border-strong: #37304a;
 
   --text:          #ece9f3;
   --text-muted:    #9a93ac;
   --text-faint:    #6f6883;
   --text-strong:   #ffffff;
 
-  --accent:        #9d6bff;
+  --accent:        #a78bfa;
   --accent-strong: #7c3aed;
   --accent-deep:   #4c1d95;
-  --accent-soft:   #b794ff;
-  --accent-pale:   #d3bcff;
+  --accent-soft:   #c4b5fd;
+  --accent-pale:   #ddd6fe;
   --accent-ink:    #ffffff;
-  --accent-wash:   rgba(124, 58, 237, .10);
-  --accent-line:   rgba(139, 92, 246, .25);
-  --heat-rgb:      168, 85, 247;
+  --accent-wash:   rgba(124, 58, 237, .11);
+  --accent-line:   rgba(167, 139, 250, .26);
+  --heat-rgb:      167, 139, 250;
 
   --tile-a:        #1d1729;
   --tile-b:        #110d18;
@@ -64,42 +64,42 @@
 }
 
 :root[data-theme="light"] {
-  --bg:            #f7f5fb;
-  --bg-glow-1:     rgba(124, 58, 237, .10);
-  --bg-glow-2:     rgba(168, 85, 247, .07);
+  --bg:            #f6f6f8;
+  --bg-glow-1:     rgba(124, 58, 237, .07);
+  --bg-glow-2:     rgba(167, 139, 250, .05);
   --surface:       #ffffff;
-  --surface-2:     #f4f0fb;
-  --surface-3:     #eae2f8;
-  --surface-sunk:  rgba(124, 58, 237, .04);
-  --topbar-bg:     rgba(255, 255, 255, .90);
+  --surface-2:     #f2f2f5;
+  --surface-3:     #e8e7ee;
+  --surface-sunk:  rgba(24, 20, 34, .025);
+  --topbar-bg:     rgba(255, 255, 255, .92);
 
-  --border:        #e6dff2;
-  --border-strong: #d2c5e8;
+  --border:        #e6e5ea;
+  --border-strong: #d3d1da;
 
-  --text:          #1b1426;
-  --text-muted:    #5f5773;
-  --text-faint:    #8c85a0;
-  --text-strong:   #100b18;
+  --text:          #171520;
+  --text-muted:    #5a5666;
+  --text-faint:    #8a8694;
+  --text-strong:   #0c0a12;
 
-  --accent:        #7c3aed;
-  --accent-strong: #6428c4;
+  --accent:        #6d28d9;
+  --accent-strong: #5b21b6;
   --accent-deep:   #4c1d95;
-  --accent-soft:   #8b5cf6;
-  --accent-pale:   #6d28d9;
+  --accent-soft:   #7c3aed;
+  --accent-pale:   #5b21b6;
   --accent-ink:    #ffffff;
-  --accent-wash:   rgba(124, 58, 237, .07);
-  --accent-line:   rgba(124, 58, 237, .18);
-  --heat-rgb:      124, 58, 237;
+  --accent-wash:   rgba(109, 40, 217, .07);
+  --accent-line:   rgba(109, 40, 217, .18);
+  --heat-rgb:      109, 40, 217;
 
   --tile-a:        #ffffff;
-  --tile-b:        #f6f2fd;
+  --tile-b:        #fafafc;
   --panel-a:       #ffffff;
-  --panel-b:       #fbf9ff;
+  --panel-b:       #fcfcfd;
 
-  --rail-1:        #ece7f5;
-  --rail-2:        #d9cdf0;
-  --rail-3:        #b092e8;
-  --rail-4:        #7c3aed;
+  --rail-1:        #ecebf0;
+  --rail-2:        #d8d5e2;
+  --rail-3:        #a894dd;
+  --rail-4:        #6d28d9;
 
   --shadow:        0 10px 30px rgba(76, 29, 149, .13);
   --hero-wash:     rgba(168, 85, 247, .13);
@@ -758,122 +758,15 @@ select:focus, input:focus, textarea:focus {
 
 
 
-/* ========================================================== league accents
- * One neutral system for the whole product — purple-tinted greys, white and
- * near-black — with a single accent swapped per league. The logo, wordmark and
- * footer keep the brand purple regardless, so the company reads the same on
- * every page while the data takes the colour of the sport it describes.
+/* ============================================================ one palette
+ * One brand, one accent. The league changes the data on the page, not the
+ * colour of the interface — a product that repaints itself every time you
+ * switch tabs reads as three sites wearing the same logo. Purple carries the
+ * brand; greys, white and near-black carry everything else.
  *
- * Each accent is defined twice, lighter for dark grounds and darker for light
- * ones: one mid-tone cannot clear contrast on both.
- *
- *   MLB  green   — the field
- *   NBA  red     — the league's own mark, and the only warm tone that stays
- *                  legible next to a hardwood-neutral interface
- *   NFL  navy    — the shield
+ * Leagues are told apart by their ball glyph and their name, which is how
+ * people tell them apart anyway.
  */
-
-/* ------------------------------------------------------------- MLB · green */
-:root[data-sport="mlb"] {
-  --accent:        #3fb96b;
-  --accent-strong: #2e8f52;
-  --accent-deep:   #14532d;
-  --accent-soft:   #86e0a8;
-  --accent-pale:   #bff0d0;
-  --accent-wash:   rgba(46, 143, 82, .13);
-  --accent-line:   rgba(63, 185, 107, .28);
-  --heat-rgb:      63, 185, 107;
-  --bg-glow-1:     rgba(46, 143, 82, .15);
-  --bg-glow-2:     rgba(63, 185, 107, .09);
-  --hero-wash:     rgba(20, 83, 45, .34);
-  --rail-3:        #2c6a45;
-  --rail-4:        #3fb96b;
-}
-:root[data-sport="mlb"][data-theme="light"] {
-  --accent:        #1a7f43;
-  --accent-strong: #146334;
-  --accent-deep:   #0f4a27;
-  --accent-soft:   #2e8f52;
-  --accent-pale:   #146334;
-  --accent-wash:   rgba(26, 127, 67, .08);
-  --accent-line:   rgba(26, 127, 67, .20);
-  --heat-rgb:      26, 127, 67;
-  --bg-glow-1:     rgba(46, 143, 82, .09);
-  --bg-glow-2:     rgba(63, 185, 107, .06);
-  --hero-wash:     rgba(134, 224, 168, .22);
-  --rail-1:        #e9edea;
-  --rail-2:        #cfe0d5;
-  --rail-3:        #8dc3a2;
-  --rail-4:        #1a7f43;
-}
-
-/* --------------------------------------------------------------- NBA · red */
-:root[data-sport="nba"] {
-  --accent:        #f2585b;
-  --accent-strong: #d62c33;
-  --accent-deep:   #7f1d1d;
-  --accent-soft:   #f88a8c;
-  --accent-pale:   #fbc0c1;
-  --accent-wash:   rgba(214, 44, 51, .13);
-  --accent-line:   rgba(242, 88, 91, .28);
-  --heat-rgb:      242, 88, 91;
-  --bg-glow-1:     rgba(214, 44, 51, .15);
-  --bg-glow-2:     rgba(242, 88, 91, .09);
-  --hero-wash:     rgba(127, 29, 29, .36);
-  --rail-3:        #8f3236;
-  --rail-4:        #f2585b;
-}
-:root[data-sport="nba"][data-theme="light"] {
-  --accent:        #c02128;
-  --accent-strong: #9b1a20;
-  --accent-deep:   #7f1518;
-  --accent-soft:   #d62c33;
-  --accent-pale:   #9b1a20;
-  --accent-wash:   rgba(192, 33, 40, .07);
-  --accent-line:   rgba(192, 33, 40, .20);
-  --heat-rgb:      192, 33, 40;
-  --bg-glow-1:     rgba(214, 44, 51, .08);
-  --bg-glow-2:     rgba(242, 88, 91, .06);
-  --hero-wash:     rgba(248, 138, 140, .20);
-  --rail-1:        #f0ecec;
-  --rail-2:        #e4cfd0;
-  --rail-3:        #d99194;
-  --rail-4:        #c02128;
-}
-
-/* -------------------------------------------------------------- NFL · navy */
-:root[data-sport="nfl"] {
-  --accent:        #6b8fd4;
-  --accent-strong: #3b5fa8;
-  --accent-deep:   #1e2f5c;
-  --accent-soft:   #9ab2e4;
-  --accent-pale:   #c5d3f0;
-  --accent-wash:   rgba(59, 95, 168, .14);
-  --accent-line:   rgba(107, 143, 212, .28);
-  --heat-rgb:      107, 143, 212;
-  --bg-glow-1:     rgba(59, 95, 168, .15);
-  --bg-glow-2:     rgba(107, 143, 212, .09);
-  --hero-wash:     rgba(30, 47, 92, .40);
-  --rail-3:        #3c5590;
-  --rail-4:        #6b8fd4;
-}
-:root[data-sport="nfl"][data-theme="light"] {
-  --accent:        #26417d;
-  --accent-strong: #1c3160;
-  --accent-deep:   #142347;
-  --accent-soft:   #3b5fa8;
-  --accent-pale:   #1c3160;
-  --accent-wash:   rgba(38, 65, 125, .07);
-  --accent-line:   rgba(38, 65, 125, .20);
-  --heat-rgb:      38, 65, 125;
-  --bg-glow-1:     rgba(59, 95, 168, .08);
-  --bg-glow-2:     rgba(107, 143, 212, .06);
-  --hero-wash:     rgba(154, 178, 228, .22);
-  --rail-1:        #eceef3;
-  --rail-2:        #d2d9e8;
-  --rail-3:        #93a6cd;
-  --rail-4:        #26417d;
-}
 
 /* ---------------------------------------------------------- sport switcher */
 .sport-switch {
@@ -1174,4 +1067,299 @@ select:focus, input:focus, textarea:focus {
   .chat-msg { max-width: 94%; }
   .chat-log { max-height: 58vh; }
   .health-head { justify-content: flex-start; }
+}
+
+/* ============================================================== home page */
+.hero {
+  text-align: center; padding: 48px 22px 40px; max-width: 780px; margin: 0 auto;
+}
+.hero-title {
+  margin: 0 0 16px; font-size: clamp(30px, 6vw, 46px); font-weight: 800;
+  letter-spacing: -.03em; line-height: 1.1; color: var(--text-strong);
+  text-wrap: balance;
+}
+.hero-title em { font-style: italic; color: var(--brand); font-weight: 400; }
+.hero-sub {
+  margin: 0 auto 26px; max-width: 56ch; font-size: 15.5px; line-height: 1.7;
+  color: var(--text-muted);
+}
+.hero-actions {
+  display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 32px;
+}
+.hero-actions .btn { padding: 11px 20px; font-size: 13.5px; }
+.hero-leagues { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.hero-league {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 13px 20px; min-width: 108px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); color: var(--text);
+  font-size: 13px; font-weight: 700; letter-spacing: .04em;
+  transition: border-color .15s, transform .15s;
+}
+.hero-league:hover { border-color: var(--brand); transform: translateY(-2px); color: var(--text); }
+.hero-ball { font-size: 22px; line-height: 1; }
+.hero-league small { font-size: 10.5px; color: var(--text-faint); font-weight: 500; letter-spacing: .02em; }
+
+.home-grid {
+  display: grid; gap: 16px; padding: 8px 0 20px;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+.home-card {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: linear-gradient(170deg, var(--panel-a), var(--panel-b));
+  padding: 18px 20px 16px; text-align: left;
+}
+.home-card.wide { grid-column: 1 / -1; }
+.home-card-head { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 14px; }
+.home-ball { font-size: 20px; line-height: 1.2; flex: none; }
+.home-card h3 {
+  margin: 0 0 3px; font-size: 14px; font-weight: 700; letter-spacing: -.005em;
+  color: var(--text-strong); line-height: 1.35;
+}
+.home-meta { font-size: 11.5px; color: var(--text-faint); font-style: italic; }
+.home-list {
+  list-style: none; margin: 0 0 14px; padding: 0;
+  display: flex; flex-direction: column; gap: 1px; flex: 1;
+}
+.home-list li {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13.5px;
+}
+.home-list li:last-child { border-bottom: 0; }
+.home-list li span { font-family: var(--mono); color: var(--accent); font-weight: 700; font-size: 13px; }
+.home-body { flex: 1; margin-bottom: 12px; }
+.home-body p { margin: 0 0 11px; font-size: 13px; line-height: 1.75; color: var(--text-muted); }
+.home-body p:last-child { margin-bottom: 0; }
+.home-body b { color: var(--text); }
+.home-more {
+  font-size: 12px; font-weight: 600; color: var(--accent);
+  align-self: flex-start; margin-top: auto;
+}
+
+/* ------------------------------------------------------ profile + injuries */
+.factgrid {
+  display: grid; gap: 10px; padding: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.fact {
+  padding: 11px 13px; border-radius: var(--radius-sm);
+  background: var(--surface-2); border: 1px solid var(--border); text-align: left;
+}
+.fact-key {
+  font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--text-faint); margin-bottom: 5px;
+}
+.fact-val { font-size: 13.5px; color: var(--text); line-height: 1.45; }
+
+.team-track {
+  display: flex; gap: 6px; padding: 18px; overflow-x: auto; justify-content: flex-start;
+}
+.team-stop {
+  flex: none; min-width: 62px; text-align: center;
+  padding: 9px 8px; border-radius: var(--radius-sm);
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.team-year { font-size: 10px; color: var(--text-faint); margin-bottom: 3px; }
+.team-code { font-family: var(--mono); font-size: 12.5px; font-weight: 700; color: var(--accent); }
+
+.chip-row { display: flex; gap: 7px; flex-wrap: wrap; padding: 0 18px 16px; justify-content: center; }
+.chip.static { cursor: default; }
+.chip.static:hover { border-color: var(--border-strong); color: var(--text-muted); }
+
+/* ==================================================== spacing + typography
+ * A pass over the containers that hold running text: consistent inner padding,
+ * a real line-height, and a measure that does not run past ~75 characters.
+ */
+.note { padding: 14px 18px; line-height: 1.75; }
+.note + .note { margin-top: 12px; }
+.prose { line-height: 1.8; }
+.prose p { margin: 0 0 15px; }
+.prose li { margin-bottom: 8px; line-height: 1.7; }
+.panel-head { padding: 14px 18px; gap: 5px; }
+.panel-head h2 { line-height: 1.4; }
+.panel-head .hint { line-height: 1.5; }
+.tile { padding: 16px 15px; }
+.tile-label { line-height: 1.4; margin-bottom: 8px; }
+.tile-sub { line-height: 1.5; margin-top: 7px; }
+.view-head { padding: 0 4px; }
+.view-head h1 { line-height: 1.2; text-wrap: balance; }
+.view-head p { line-height: 1.7; max-width: 68ch; }
+.empty-state { padding: 56px 24px; line-height: 1.7; }
+.empty-state h3 { margin-bottom: 10px; }
+.rule { padding: 9px 13px; line-height: 1.5; }
+.setting { padding: 8px 13px; }
+.cmp-row { padding: 7px 0; line-height: 1.5; }
+.bio p { line-height: 1.85; }
+table.stats th { padding: 10px 11px; }
+table.stats td { padding: 9px 11px; }
+.health-item { padding: 16px 18px; }
+.health-what { line-height: 1.7; }
+.roster-slots { gap: 7px; padding: 18px; }
+.metrics { padding: 18px; gap: 11px; }
+.metric { padding: 13px 10px; }
+
+@media (max-width: 560px) {
+  .hero { padding: 32px 14px 28px; }
+  .hero-actions { flex-direction: column; align-items: stretch; }
+  .hero-actions .btn { width: 100%; }
+  .home-grid { grid-template-columns: 1fr; gap: 12px; }
+  .home-card { padding: 16px 15px 14px; }
+  .factgrid { grid-template-columns: 1fr 1fr; gap: 8px; padding: 14px; }
+  .note { padding: 13px 15px; }
+  .panel-head { padding: 13px 15px; }
+}
+
+/* Twelve tabs wrapped into five rows on a phone and pushed the content below
+   the fold. On narrow screens the nav becomes one swipeable strip instead. */
+@media (max-width: 760px) {
+  .tabs {
+    flex-wrap: nowrap; overflow-x: auto; justify-content: flex-start;
+    scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch;
+    padding: 0 14px 10px; gap: 5px;
+    scrollbar-width: none; mask-image: linear-gradient(90deg, #000 88%, transparent);
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs a { flex: none; scroll-snap-align: start; padding: 8px 13px; font-size: 12.5px; }
+  .tab-divider { display: none; }
+  .topbar-inner { padding: 10px 14px 8px; gap: 12px; }
+  .brand-sub { display: none; }
+  .sport-switch button { padding: 6px 10px; }
+}
+
+/* ================================================================= shell
+ * A fixed control panel on the left, content to its right. Below 1000px the
+ * panel slides in as a drawer, so a phone shows content first and navigation
+ * on request — which is the order people actually want them in.
+ */
+.shell { display: flex; min-height: 100vh; width: 100%; }
+.content {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+}
+
+.sidebar {
+  width: 260px; flex: none;
+  position: sticky; top: 0; align-self: flex-start;
+  height: 100vh; overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 18px 12px 14px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  z-index: 70;
+}
+.sidebar .brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 8px 14px; color: inherit;
+}
+.sidebar .brand-name {
+  font-size: 12.5px; font-weight: 800; letter-spacing: .1em;
+  color: var(--text-strong); white-space: nowrap;
+}
+.sidebar .brand-name em { font-weight: 300; color: var(--brand); letter-spacing: .07em; }
+
+.side-league { padding: 0 8px 14px; }
+.side-label {
+  display: block; font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--text-faint); margin-bottom: 7px;
+}
+.sidebar .sport-switch { width: 100%; }
+.sidebar .sport-switch button { flex: 1; justify-content: center; padding: 7px 6px; }
+
+.side-nav { display: flex; flex-direction: column; gap: 3px; flex: 1; }
+.nav-group-wrap { display: flex; flex-direction: column; }
+.nav-group {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 9px 10px; border: 0; border-radius: var(--radius-sm);
+  background: transparent; cursor: pointer; font-family: var(--sans);
+  color: var(--text-muted); font-size: 11px; font-weight: 700;
+  letter-spacing: .12em; text-transform: uppercase; text-align: left;
+}
+.nav-group:hover { background: var(--surface-2); color: var(--text); }
+.nav-group-label { flex: 1; }
+.nav-caret {
+  font-size: 9px; color: var(--text-faint);
+  transition: transform .18s ease;
+}
+.nav-group.open .nav-caret { transform: rotate(90deg); }
+.nav-group.owner { color: #e5484d; }
+.nav-group.owner:hover { background: rgba(229, 72, 77, .08); color: #ff6369; }
+
+.nav-items { display: flex; flex-direction: column; gap: 1px; padding: 2px 0 6px 8px; }
+.nav-item {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  color: var(--text-muted); border-left: 2px solid transparent;
+}
+.nav-item:hover { background: var(--surface-2); color: var(--text); }
+.nav-icon { font-size: 13px; line-height: 1.35; flex: none; width: 16px; text-align: center; }
+.nav-text { display: flex; flex-direction: column; min-width: 0; }
+.nav-label { font-size: 13px; font-weight: 600; line-height: 1.35; }
+.nav-blurb {
+  font-size: 10.5px; color: var(--text-faint); line-height: 1.4; margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nav-item.active {
+  background: var(--accent-wash); color: var(--text-strong);
+  border-left-color: var(--brand);
+}
+.nav-item.active .nav-label { color: var(--brand); font-weight: 700; }
+.nav-item.owner .nav-label { color: #e5484d; }
+.nav-item.owner.active { background: rgba(229, 72, 77, .10); border-left-color: #e5484d; }
+
+.side-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 12px 8px 2px; margin-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+/* -------------------------------------------------------------- top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 60;
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 22px;
+  background: var(--topbar-bg); backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border);
+}
+.topbar .search-wrap { flex: 1; max-width: 460px; }
+.topbar #globalSearch { width: 100%; max-width: none; }
+.topbar-context {
+  margin-left: auto; font-size: 11.5px; color: var(--text-faint);
+  font-style: italic; white-space: nowrap;
+}
+
+.menu-btn {
+  display: none; width: 38px; height: 38px; flex: none;
+  border-radius: var(--radius-sm); border: 1px solid var(--border-strong);
+  background: var(--surface-2); cursor: pointer;
+  flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+}
+.menu-btn span {
+  display: block; width: 16px; height: 2px; border-radius: 2px;
+  background: var(--text); transition: transform .2s, opacity .2s;
+}
+.drawer-scrim {
+  position: fixed; inset: 0; z-index: 65;
+  background: rgba(0, 0, 0, .5); backdrop-filter: blur(2px);
+}
+
+main { padding: 26px 22px 60px; }
+
+@media (max-width: 1000px) {
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; height: 100dvh;
+    width: 282px; transform: translateX(-100%);
+    transition: transform .22s ease; box-shadow: var(--shadow);
+  }
+  body.drawer-open .sidebar { transform: translateX(0); }
+  .menu-btn { display: flex; }
+  body.drawer-open .menu-btn span:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+  body.drawer-open .menu-btn span:nth-child(2) { opacity: 0; }
+  body.drawer-open .menu-btn span:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+  .topbar { padding: 10px 14px; }
+  main { padding: 18px 14px 48px; }
+  .topbar-context { display: none; }
+}
+
+@media (min-width: 1001px) {
+  .drawer-scrim { display: none !important; }
 }

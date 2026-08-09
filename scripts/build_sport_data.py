@@ -40,6 +40,11 @@ NFL_URL = ("https://github.com/nflverse/nflverse-data/releases/download/"
 NBA_URL = ("https://github.com/sportsdataverse/sportsdataverse-data/releases/"
            "download/nba_stats_player_season_stats/player_season_stats_{year}.parquet")
 NBA_SEASONS = range(1996, 2026)
+NFL_PLAYERS_URL = ("https://github.com/nflverse/nflverse-data/releases/download/"
+                   "players/players.parquet")
+NFL_INJURY_URL = ("https://github.com/nflverse/nflverse-data/releases/download/"
+                  "injuries/injuries_{year}.parquet")
+NFL_INJURY_SEASONS = range(2009, 2025)
 
 
 # --------------------------------------------------------------------------
@@ -146,6 +151,92 @@ def build_nfl(src: Path):
     return season, stats
 
 
+def nfl_profiles(src: Path) -> dict:
+    """Bio, draft and injury history, keyed by the same player id as the stats.
+
+    nflverse is the only one of the three sources that publishes an injury
+    report feed, so this is football-only; the site says as much on the other
+    two rather than leaving an empty panel.
+    """
+    people = pd.read_parquet(fetch(NFL_PLAYERS_URL, src / "nfl_players.parquet"))
+    profiles: dict[str, dict] = {}
+    for r in people.itertuples(index=False):
+        pid = txt(getattr(r, "gsis_id", ""))
+        if not pid:
+            continue
+        entry = {}
+        for key, attr in (("college", "college_name"), ("status", "status"),
+                          ("jersey", "jersey_number"), ("born", "birth_date"),
+                          ("ht", "height"), ("wt", "weight"),
+                          ("pos", "position"), ("team", "latest_team")):
+            val = getattr(r, attr, None)
+            if isinstance(val, str) and val:
+                entry[key] = val
+            elif isinstance(val, (int, float)) and not pd.isna(val):
+                entry[key] = i0(val)
+        for key, attr in (("dyear", "draft_year"), ("dround", "draft_round"),
+                          ("dpick", "draft_pick")):
+            val = getattr(r, attr, None)
+            if val is not None and not pd.isna(val):
+                entry[key] = i0(val)
+        dteam = getattr(r, "draft_team", None)
+        if isinstance(dteam, str) and dteam:
+            entry["dteam"] = dteam
+        rookie = getattr(r, "rookie_season", None)
+        if rookie is not None and not pd.isna(rookie):
+            entry["rookie"] = i0(rookie)
+        if entry:
+            profiles[pid] = entry
+
+    # Injury reports: one row per player per week, collapsed to a per-season
+    # summary plus the individual entries, which is what a manager actually
+    # reads -- "how often, how badly, and what part of him".
+    frames = []
+    for year in NFL_INJURY_SEASONS:
+        path = src / f"inj_{year}.parquet"
+        if not path.exists():
+            try:
+                fetch(NFL_INJURY_URL.format(year=year), path)
+            except Exception:                              # noqa: BLE001
+                continue
+        try:
+            frames.append(pd.read_parquet(path))
+        except Exception as exc:                           # noqa: BLE001
+            logger.warning("injury %s unreadable: %s", year, exc)
+    if not frames:
+        logger.warning("No NFL injury data found")
+        return profiles
+
+    inj = pd.concat(frames, ignore_index=True)
+    inj = inj[inj["gsis_id"].notna()]
+    logger.info("NFL injury rows: %d across %d seasons", len(inj), len(frames))
+
+    for pid, rows in inj.groupby("gsis_id"):
+        entries = []
+        for r in rows.sort_values(["season", "week"]).itertuples(index=False):
+            status = txt(getattr(r, "report_status", "")) or txt(getattr(r, "practice_status", ""))
+            what = txt(getattr(r, "report_primary_injury", "")) or \
+                   txt(getattr(r, "practice_primary_injury", ""))
+            if not status and not what:
+                continue
+            entries.append([i0(r.season), i0(r.week), what, status])
+        if not entries:
+            continue
+        out_weeks = sum(1 for e in entries if e[3].lower().startswith("out"))
+        parts: dict[str, int] = {}
+        for e in entries:
+            if e[2]:
+                parts[e[2]] = parts.get(e[2], 0) + 1
+        top = sorted(parts.items(), key=lambda kv: -kv[1])[:4]
+        profiles.setdefault(str(pid), {})["inj"] = {
+            "n": len(entries), "out": out_weeks,
+            "seasons": sorted({e[0] for e in entries}),
+            "common": [[k, v] for k, v in top],
+            "log": entries[-40:],
+        }
+    return profiles
+
+
 # --------------------------------------------------------------------------
 # NBA
 # --------------------------------------------------------------------------
@@ -169,6 +260,27 @@ def build_nba(src: Path):
         d["year"] = year
         frames.append(d)
     raw = pd.concat(frames, ignore_index=True)
+
+    # The source ships 24 rows per player-season: regular season and playoffs,
+    # totals and per-game, across six measure types. Summing them blends a
+    # rebound average into a rebound total and folds the postseason into the
+    # regular one -- which is exactly how Dwight Howard's 1,098 rebounds in
+    # 2010-11 came out as 1,220.6. Take one row: regular-season, base, totals.
+    before = len(raw)
+    if "season_type" in raw:
+        raw = raw[raw["season_type"].astype(str).str.lower().str.contains("regular")]
+    if "measure_type" in raw:
+        raw = raw[raw["measure_type"].astype(str).str.lower() == "base"]
+    if "per_mode" in raw:
+        modes = raw["per_mode"].astype(str).str.lower()
+        totals = modes.str.contains("total")
+        raw = raw[totals] if totals.any() else raw
+    # Whatever the per_mode labels say, the totals row is the one whose points
+    # scale with games played; per-game rows survive as small numbers.
+    raw = raw.sort_values("pts", ascending=False).drop_duplicates(
+        subset=["player_id", "year"], keep="first")
+    logger.info("NBA rows: %d -> %d after selecting regular-season base totals",
+                before, len(raw))
     logger.info("NBA raw rows: %d across %d seasons", len(raw), len(frames))
 
     frame = pd.DataFrame({
@@ -204,7 +316,7 @@ def score(df: pd.DataFrame, weights: dict) -> pd.Series:
 
 def write_dataset(sport: str, season: pd.DataFrame, stats: list[str],
                   scoring: dict, roster: list[str], out: Path,
-                  source: str, note: str):
+                  source: str, note: str, profiles: dict | None = None):
     season = season.copy()
     season["PTSF"] = score(season, scoring)
 
@@ -252,6 +364,14 @@ def write_dataset(sport: str, season: pd.DataFrame, stats: list[str],
             "c": [r1(c["G"])] + [r1(c[s]) for s in stats[:-1]]
                  + [r1(c["PTSF"]), i0(c["y0"]), i0(c["y1"]), i0(c["n"])],
         }
+        profile = (profiles or {}).get(pid)
+        if profile:
+            rec["bio"] = {k: v for k, v in profile.items() if k != "inj"}
+            if "inj" in profile:
+                rec["inj"] = profile["inj"]
+        # Team history comes free from the seasons already on the record.
+        rec["teams"] = list(dict.fromkeys(
+            t for row in rec["s"] for t in str(row[1]).split("/") if t))
         shards[n % SHARD_COUNT][str(n)] = rec
 
     shard_dir = out / "players"
@@ -335,6 +455,8 @@ def write_dataset(sport: str, season: pd.DataFrame, stats: list[str],
         "career_cols": career_cols,
         "qualifiers": {"season_games": min_games},
         "shards": SHARD_COUNT,
+        "has_injuries": sport == "nfl",
+        "has_bios": sport == "nfl",
     })
 
     total = sum(f.stat().st_size for f in out.rglob("*.json"))
@@ -355,11 +477,15 @@ def main() -> int:
 
     if args.sport == "nfl":
         season, stats = build_nfl(src)
+        profiles = nfl_profiles(src)
+        logger.info("NFL profiles: %d players, %d with injury history",
+                    len(profiles), sum(1 for v in profiles.values() if "inj" in v))
         write_dataset("nfl", season, stats, NFL_SCORING, NFL_ROSTER, out,
                       "nflverse-data player_stats release (github.com/nflverse)",
                       "Offensive statistics only, 1999-2024. nflverse's public "
                       "player stats begin in 1999; kicking and team defence are "
-                      "separate releases and are not loaded yet.")
+                      "separate releases and are not loaded yet.",
+                      profiles=profiles)
     else:
         season, stats = build_nba(src)
         write_dataset("nba", season, stats, NBA_SCORING, NBA_ROSTER, out,
