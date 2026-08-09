@@ -52,16 +52,22 @@ data rebuilds. Old numeric links still resolve.
 Everything an owner needs to set lives in the `SITE` block at the top of
 `web/app.js` — nothing else hardcodes a name, an address, or a payment link.
 
-| Field | What it's for | Set? |
+| Field | What it's for | Status |
 | --- | --- | --- |
-| `contactEmail` | Wires up the Contact page and the privacy contact line | **needed** |
-| `legalEntity` | Name used in the copyright line and Terms | **needed** |
-| `jurisdiction` | Governing law for the Terms page | **needed** |
-| `siteUrl` | Canonical URL once deployed | optional |
-| `twitter` / `instagram` / `discord` | Extra contact buttons; blank ones are hidden | optional |
-| `dynasty` | Footer credit line — currently *The Dynasty (6x) 💍* | set |
-| `watermark` | Mark stamped on cards, boards and charts | set |
-| `ads` / `support` | Monetization, both off by default | see below |
+| `contactEmail` | Contact page button and privacy contact line | set |
+| `legalEntity` | Copyright line and Terms | set (personal name) |
+| `jurisdiction` | Governing law on Terms | set (Massachusetts, USA) |
+| `twitter` / `instagram` | Contact buttons | set |
+| `linkedin` / `facebook` | Contact buttons — need full profile URLs | **blank** |
+| `formEndpoint` | Formspree/Basin URL. When set, renders a real contact form and hides the email address | **blank** |
+| `siteUrl` | Canonical URL once deployed | blank |
+| `dynasty` | Footer credit — *The Dynasty (6x) 💍* | set |
+| `watermark` | Mark on cards, boards and charts | set |
+| `ads` / `support` | Monetization, both off | see below |
+
+LinkedIn and Facebook take **full URLs**, not display names — a URL guessed
+from a name lands on a stranger's profile. Open your profile, copy the address
+bar, paste it in.
 
 Blank fields degrade gracefully — an unset social handle just doesn't render a
 button — so the site is publishable as-is and improves as you fill them in.
