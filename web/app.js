@@ -379,14 +379,16 @@ function searchPlayers(query, limit = 12) {
 
   for (let i = 0; i < names.length; i++) {
     const n = state.norm[i];
+    const last = n.slice(n.indexOf(' ') + 1);
     let score = 0;
+    // People search by surname. A bare surname that matches exactly outranks a
+    // first-name prefix, and a surname prefix ties with one -- otherwise typing
+    // "mays" surfaces Mays Copeland, a 1935 pitcher, ahead of Willie Mays,
+    // purely because his given name starts with the query.
     if (n === q) score = 1000;
-    else if (n.startsWith(q)) score = 800;
-    else {
-      const last = n.slice(n.indexOf(' ') + 1);
-      if (last.startsWith(q)) score = 700;
-      else if (terms.every((t) => n.includes(t))) score = n.includes(q) ? 500 : 300;
-    }
+    else if (last === q) score = 900;
+    else if (n.startsWith(q) || last.startsWith(q)) score = 800;
+    else if (terms.every((t) => n.includes(t))) score = n.includes(q) ? 500 : 300;
     if (!score) continue;
     // Break ties toward the players someone is most likely to mean.
     const career = bp[i] + pp[i];

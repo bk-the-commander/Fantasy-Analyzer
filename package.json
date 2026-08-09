@@ -5,7 +5,9 @@
   "description": "Dynasty Sports Analytics — all-time MLB fantasy points explorer. A Kaliris Labs project.",
   "scripts": {
     "serve": "python3 -m http.server 8811 -d web",
-    "smoke": "node scripts/smoke_web.js"
+    "smoke": "node scripts/smoke_web.js",
+    "audit": "node scripts/audit_web.js",
+    "preview": "python3 scripts/build_preview.py"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

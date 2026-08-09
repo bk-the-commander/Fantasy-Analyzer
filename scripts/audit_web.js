@@ -94,6 +94,21 @@ async function checkRoleOrder(page, path, label, expectFirst) {
   if (!landed) fail('search', 'keyboard selection did not open a player page');
   else ok('search', `keyboard nav opened ${landed}`);
 
+  // A bare surname must find the player people mean by it. These are the cases
+  // where a naive prefix score picks an obscure player whose *given* name
+  // happens to start with the query.
+  for (const [query, expected] of [['mays', 'Willie Mays'], ['ruth', 'Babe Ruth'],
+                                   ['young', 'Cy Young'], ['bonds', 'Barry Bonds'],
+                                   ['rivera', 'Mariano Rivera'], ['aaron', 'Hank Aaron']]) {
+    await page.goto(`${BASE}/#/player`, { waitUntil: 'networkidle' });
+    await page.fill('#globalSearch', query);
+    await page.waitForTimeout(350);
+    const top = await page.$eval('.sr-item .sr-name', (n) => n.textContent.replace(/★.*/, '').trim())
+      .catch(() => null);
+    if (top !== expected) fail('search', `"${query}" ranked "${top}" first, expected ${expected}`);
+    else ok('search', `"${query}" -> ${top}`);
+  }
+
   // season scope switch
   await page.goto(`${BASE}/#/player/bondsba01`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(600);
