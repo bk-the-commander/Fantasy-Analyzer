@@ -366,7 +366,7 @@ main {
 }
 /* Multi-part values (HR·R·RBI, W–L·SV, K·ERA) carry three numbers in the space
    the others use for one, so they get their own step on the scale. */
-.tile-value.compound { font-size: clamp(15px, 2.4vw, 21px); letter-spacing: -.01em; }
+.tile-value.compound { font-size: clamp(13px, 2.4vw, 21px); letter-spacing: -.01em; }
 .tile-sub { margin-top: 6px; font-size: 11.5px; color: var(--text-muted); font-style: italic; }
 .tile-sub .rank { color: var(--accent); font-weight: 700; font-style: normal; }
 
@@ -628,6 +628,26 @@ select:focus, input:focus, textarea:focus {
 .contact-form button { grid-column: 1 / -1; justify-self: center; padding: 10px 28px; }
 @media (max-width: 620px) { .contact-form { grid-template-columns: 1fr; } }
 
+/* --------------------------------------------------------- live section */
+/* Live panels are marked so a reader can tell at a glance which numbers came
+   off the wire this minute and which came from the historical dataset. */
+.live-panel { border-color: var(--accent-line); }
+.live-panel .panel-head { background: var(--accent-wash); }
+.live-dot {
+  display: inline-block; width: 7px; height: 7px; margin-right: 7px;
+  border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 0 0 var(--accent-line);
+  animation: live-pulse 2.4s ease-out infinite;
+}
+@keyframes live-pulse {
+  0%   { box-shadow: 0 0 0 0 var(--accent-line); }
+  70%  { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-dot { animation: none; }
+}
+
 /* ------------------------------------------------------------- ad slots */
 /* Rendered only when SITE.ads.enabled is true — an empty reserved box on a
    page with no ad running just looks broken. */
@@ -695,6 +715,10 @@ select:focus, input:focus, textarea:focus {
 
 @media (max-width: 560px) {
   .tiles { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding: 14px; }
+  /* "762·2,227·1,996" cannot fit a half-width phone tile at a readable size,
+     so on a narrow screen the multi-part tiles take the full row instead of
+     being shrunk into illegibility. */
+  .tile:has(.tile-value.compound) { grid-column: 1 / -1; }
   .tile { padding: 13px 11px; }
   .tile-label { font-size: 9px; letter-spacing: .1em; }
   .rail { grid-template-columns: 70px 1fr 62px; gap: 8px; }

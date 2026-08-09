@@ -50,6 +50,12 @@ const SITE = {
   siteUrl: '',               // canonical URL once it is deployed
   launchedYear: 2026,
 
+  /* ---- CURRENT SEASON --------------------------------------------------
+   * The historical dataset ends at its last complete season. Anything newer
+   * is fetched live from the MLB Stats API by the visitor's browser. Set
+   * `season` to pin a year; null follows the calendar. */
+  live: { enabled: true, season: null },
+
   /* ---- MONETIZATION ----------------------------------------------------
    * Both are off until switched on. See README "Monetization" for the full
    * rundown, including the licence obligations that come with charging for
@@ -144,6 +150,8 @@ const num = (v, d = 0) =>
     : Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 
 const ip = (outs) => `${Math.floor(outs / 3)}.${outs % 3}`;
+/** Same notation, from fractional innings rather than raw outs. */
+const ipFrom = (innings) => ip(Math.round((Number(innings) || 0) * 3));
 const ordinal = (n) => {
   const s = ['th', 'st', 'nd', 'rd'], v = n % 100;
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
@@ -714,13 +722,19 @@ async function viewPlayer(key) {
   const isCareer = scope === 'career';
   const yr = Number(scope);
 
-  if (!primaryPitcher || isTwoWay) {
-    const row = isCareer ? null : bat.find((r) => r[B.YEAR] === yr);
-    if (isCareer ? p.cb : row) await addBattingBlock(card, p, id, isCareer, row);
-  }
-  if (primaryPitcher || isTwoWay) {
-    const row = isCareer ? null : pit.find((r) => r[P.YEAR] === yr);
-    if (isCareer ? p.cp : row) await addPitchingBlock(card, p, id, isCareer, row);
+  // The primary role leads the page: a pitcher opens on pitching, a hitter on
+  // batting, and a two-way player on whichever earns him more points. Only a
+  // two-way player gets a summary for his second role -- a shortstop's one
+  // mop-up inning is history, not a headline.
+  const roles = primaryPitcher ? ['pit', 'bat'] : ['bat', 'pit'];
+  for (const role of roles) {
+    const pitching = role === 'pit';
+    if (!isTwoWay && pitching !== primaryPitcher) continue;
+    const row = isCareer ? null
+      : (pitching ? pit.find((r) => r[P.YEAR] === yr) : bat.find((r) => r[B.YEAR] === yr));
+    const career = pitching ? p.cp : p.cb;
+    if (!(isCareer ? career : row)) continue;
+    await (pitching ? addPitchingBlock : addBattingBlock)(card, p, id, isCareer, row);
   }
 
   // --- chart --------------------------------------------------------------
@@ -739,9 +753,11 @@ async function viewPlayer(key) {
                                              : 'Click a bar to load that season')),
     seasonChart(seasons, (y) => go(playerHref(id, `?season=${y}`)), isCareer ? null : yr)));
 
-  // --- season logs --------------------------------------------------------
-  if (bat.length) container.append(battingLog(bat, p));
-  if (pit.length) container.append(pitchingLog(pit, p));
+  // --- season logs, in the same role order as the summary above -----------
+  mount(container, (primaryPitcher
+    ? [pit.length && pitchingLog(pit, p), bat.length && battingLog(bat, p)]
+    : [bat.length && battingLog(bat, p), pit.length && pitchingLog(pit, p)]
+  ).filter(Boolean));
 
   // --- data caveats, only where they actually bite ------------------------
   const firstYear = years[0];
@@ -763,6 +779,18 @@ async function viewPlayer(key) {
   }
 
   mount(container, adSlot('inline'));
+
+  // Live current-season figures, folded in only for someone recent enough to
+  // plausibly still be playing. Awaited after the page is already on screen,
+  // so a slow or failed request never delays the historical view.
+  const lastPlayed = years[years.length - 1];
+  const season = SITE.live.season || new Date().getFullYear();
+  if (SITE.live.enabled && lastPlayed >= season - LIVE.activeWithin) {
+    const live = await ensureLive();
+    const block = liveBlockFor(p, live);
+    if (block) card.after(block);
+    else mount(container, liveStatusNote(live, lastPlayed));
+  }
 }
 
 /** Earliest season for which every scoring category was actually being kept. */
@@ -1305,6 +1333,304 @@ function viewScoring() {
         `${m.qualifiers.career_ip}+ IP for a career.` })));
 }
 
+// --------------------------------------------------------- current season
+//
+// The historical databank ends at its last complete season, so anything more
+// recent is fetched live, in the visitor's own browser, from the MLB Stats API
+// (statsapi.mlb.com) -- the same public, documented, no-auth JSON service that
+// powers MLB's own site.
+//
+// Not Baseball Reference: it has no public API and its terms forbid scraping.
+// Not a paid feed: this needs to stay a static site with no server and no key.
+//
+// Everything here is best-effort. The fetch can fail -- offline, an API change,
+// a blocked network -- and when it does the site carries on with its historical
+// data and says plainly that live figures are unavailable. Live data is never
+// on the critical path of a page render.
+
+const LIVE = {
+  base: 'https://statsapi.mlb.com/api/v1',
+  timeoutMs: 9000,
+  /* How far back a career can end and still be matched to a live player. Stops
+   * a 2026 "Will Smith" from being stapled onto the 1890s one. */
+  activeWithin: 3,
+};
+
+/** MLB reports innings as "182.1" meaning 182 innings and one out. */
+function parseInnings(value) {
+  if (value === null || value === undefined) return 0;
+  const [whole, outs] = String(value).split('.');
+  return (Number(whole) || 0) + (Number(outs) || 0) / 3;
+}
+
+function scoreLiveBatting(s, weights) {
+  const singles = (s.hits || 0) - (s.doubles || 0) - (s.triples || 0) - (s.homeRuns || 0);
+  const parts = {
+    R: s.runs, '1B': singles, '2B': s.doubles, '3B': s.triples, HR: s.homeRuns,
+    RBI: s.rbi, SB: s.stolenBases, BB: s.baseOnBalls, IBB: s.intentionalWalks,
+    HBP: s.hitByPitch,
+  };
+  let points = 0;
+  for (const [cat, weight] of Object.entries(weights)) {
+    if (parts[cat] !== undefined && parts[cat] !== null) points += weight * Number(parts[cat]);
+  }
+  return points;
+}
+
+function scoreLivePitching(s, weights) {
+  // The live feed carries Holds and Blown Saves, which the historical databank
+  // does not -- so a current-season reliever scores more completely here than
+  // his 1990s counterpart does.
+  const parts = {
+    IP: parseInnings(s.inningsPitched), W: s.wins, L: s.losses, CG: s.completeGames,
+    SHO: s.shutouts, SV: s.saves, ER: s.earnedRuns, K: s.strikeOuts,
+    HLD: s.holds, BS: s.blownSaves, QS: s.qualityStarts,
+  };
+  let points = 0;
+  const scored = [];
+  for (const [cat, weight] of Object.entries(weights)) {
+    if (parts[cat] !== undefined && parts[cat] !== null) {
+      points += weight * Number(parts[cat]);
+      scored.push(cat);
+    }
+  }
+  return { points, scored };
+}
+
+async function fetchLiveGroup(group, season) {
+  const url = `${LIVE.base}/stats?stats=season&group=${group}&season=${season}` +
+              '&sportId=1&limit=2000&playerPool=ALL&gameType=R';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LIVE.timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`MLB Stats API returned ${res.status}`);
+    const json = await res.json();
+    const splits = [];
+    for (const block of json.stats || []) for (const split of block.splits || []) splits.push(split);
+    return splits;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Fetch once per session; every caller after the first awaits the same promise. */
+let livePromise = null;
+
+function ensureLive() {
+  if (!SITE.live.enabled || EMBEDDED) {
+    return Promise.resolve({ status: 'off' });
+  }
+  if (livePromise) return livePromise;
+
+  livePromise = (async () => {
+    const wanted = SITE.live.season || new Date().getFullYear();
+    // Early in a calendar year the new season has no rows yet; fall back one.
+    for (const season of [wanted, wanted - 1]) {
+      let hitting, pitching;
+      try {
+        [hitting, pitching] = await Promise.all([
+          fetchLiveGroup('hitting', season),
+          fetchLiveGroup('pitching', season),
+        ]);
+      } catch (err) {
+        return { status: 'error', error: err.message || String(err) };
+      }
+      if (!hitting.length && !pitching.length) continue;
+
+      const bw = state.meta.batting_scoring, pw = state.meta.pitching_scoring;
+      const byName = new Map();
+      const bat = [], pit = [];
+      let pitchingCats = [];
+
+      for (const split of hitting) {
+        const s = split.stat || {}, person = split.player || {};
+        const row = {
+          id: person.id, name: person.fullName || '', team: (split.team || {}).abbreviation || '',
+          G: s.gamesPlayed || 0, PA: s.plateAppearances || 0, HR: s.homeRuns || 0,
+          R: s.runs || 0, RBI: s.rbi || 0, SB: s.stolenBases || 0, BB: s.baseOnBalls || 0,
+          pts: scoreLiveBatting(s, bw),
+        };
+        row.ptsg = row.G ? row.pts / row.G : 0;
+        bat.push(row);
+        const key = norm(row.name);
+        if (!byName.has(key)) byName.set(key, {});
+        // A traded player appears once per club; keep the fuller line.
+        const slot = byName.get(key);
+        if (!slot.bat || row.PA > slot.bat.PA) slot.bat = row;
+      }
+
+      for (const split of pitching) {
+        const s = split.stat || {}, person = split.player || {};
+        const { points, scored } = scoreLivePitching(s, pw);
+        if (scored.length > pitchingCats.length) pitchingCats = scored;
+        const row = {
+          id: person.id, name: person.fullName || '', team: (split.team || {}).abbreviation || '',
+          G: s.gamesPlayed || 0, GS: s.gamesStarted || 0, W: s.wins || 0, L: s.losses || 0,
+          SV: s.saves || 0, HLD: s.holds || 0, IP: parseInnings(s.inningsPitched),
+          SO: s.strikeOuts || 0, ERA: Number(s.era) || 0, pts: points,
+        };
+        row.ptsg = row.G ? row.pts / row.G : 0;
+        pit.push(row);
+        const key = norm(row.name);
+        if (!byName.has(key)) byName.set(key, {});
+        const slot = byName.get(key);
+        if (!slot.pit || row.IP > slot.pit.IP) slot.pit = row;
+      }
+
+      bat.sort((a, b) => b.pts - a.pts);
+      pit.sort((a, b) => b.pts - a.pts);
+      return { status: 'ready', season, bat, pit, byName, pitchingCats,
+               fetchedAt: new Date() };
+    }
+    return { status: 'empty', season: wanted };
+  })();
+
+  return livePromise;
+}
+
+/** Live block for a player page. Returns null when there is nothing to add. */
+function liveBlockFor(record, live) {
+  if (!live || live.status !== 'ready') return null;
+  const hit = live.byName.get(norm(record.n));
+  if (!hit || (!hit.bat && !hit.pit)) return null;
+
+  const tiles = [];
+  if (hit.bat && hit.bat.PA > 0) {
+    tiles.push(
+      tile('Batting points', num(hit.bat.pts, 0), `${num(hit.bat.G)} G · ${num(hit.bat.PA)} PA`, true),
+      tile('Points / game', num(hit.bat.ptsg, 2), hit.bat.team || null),
+      tile('HR · R · RBI', `${num(hit.bat.HR)}·${num(hit.bat.R)}·${num(hit.bat.RBI)}`),
+      tile('SB · BB', `${num(hit.bat.SB)} · ${num(hit.bat.BB)}`));
+  }
+  if (hit.pit && hit.pit.IP > 0) {
+    tiles.push(
+      tile('Pitching points', num(hit.pit.pts, 0),
+        `${num(hit.pit.G)} G · ${ipFrom(hit.pit.IP)} IP`, !tiles.length),
+      tile('Points / IP', num(hit.pit.IP ? hit.pit.pts / hit.pit.IP : 0, 2), hit.pit.team || null),
+      tile('W–L · SV · HLD', `${num(hit.pit.W)}–${num(hit.pit.L)} · ${num(hit.pit.SV)} · ${num(hit.pit.HLD)}`),
+      tile('K · ERA', `${num(hit.pit.SO)} · ${num(hit.pit.ERA, 2)}`));
+  }
+  if (!tiles.length) return null;
+
+  return el('div', { class: 'panel live-panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, el('span', { class: 'live-dot' }), `${live.season} season — live`),
+      el('span', { class: 'hint' },
+        `Fetched from the MLB Stats API at ${live.fetchedAt.toLocaleTimeString()}`)),
+    el('div', { class: 'tiles' }, tiles),
+    watermark());
+}
+
+function liveStatusNote(live, lastPlayed) {
+  if (!live) return null;
+  if (live.status === 'off') return null;
+  if (live.status === 'error') {
+    return el('div', { class: 'note', html:
+      `<b>Live stats unavailable.</b> Current-season figures come from the MLB ` +
+      `Stats API in your browser, and that request did not succeed (${live.error}). ` +
+      'Everything else on this page is historical data and is unaffected.' });
+  }
+  if (live.status === 'empty') {
+    return el('div', { class: 'note', html:
+      `<b>No ${live.season} data yet.</b> The season has not produced statistics ` +
+      'to score. Historical figures below are unaffected.' });
+  }
+  if (live.status === 'ready' && lastPlayed) {
+    return null;
+  }
+  return null;
+}
+
+async function viewLive() {
+  const head = el('div', { class: 'view-head' },
+    el('h1', {}, 'This Season'),
+    el('p', {}, 'Current-season totals, scored in our league’s points and refreshed ' +
+      'from the MLB Stats API every time you load this page.'));
+
+  const body = el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' }, el('h2', {}, 'Loading current season…'),
+      el('span', { class: 'hint' }, 'Fetching from statsapi.mlb.com')),
+    el('div', { class: 'empty-state' }, el('div', { class: 'boot-spinner' })));
+  app().replaceChildren(head, body);
+
+  const live = await ensureLive();
+
+  if (live.status !== 'ready') {
+    const why = live.status === 'off'
+      ? 'Live stats are switched off in this build. The offline preview has no network access; the deployed site fetches them.'
+      : live.status === 'empty'
+        ? `The ${live.season} season has not produced statistics yet.`
+        : `The request to the MLB Stats API did not succeed (${live.error}). This can happen ` +
+          'offline, behind a restrictive network, or if the API changes shape.';
+    return app().replaceChildren(head, el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' }, el('h2', {}, 'Current season unavailable')),
+      el('div', { class: 'empty-state' },
+        el('h3', {}, 'No live data right now'),
+        el('div', {}, why)),
+      el('div', { class: 'note', html:
+        'The rest of the site is built from a local historical dataset and works ' +
+        'regardless — try <a href="#/career">Career Leaders</a>.' })));
+  }
+
+  const opts = { group: 'batting' };
+  const table = el('div', {});
+
+  const draw = () => {
+    const batting = opts.group === 'batting';
+    const rows = batting ? live.bat : live.pit;
+    const cols = batting
+      ? [{ key: 'name', label: 'Player', cls: 'txt' },
+         { key: 'team', label: 'Tm', cls: 'txt' },
+         { key: 'G', label: 'G' }, { key: 'PA', label: 'PA' }, { key: 'HR', label: 'HR' },
+         { key: 'R', label: 'R' }, { key: 'RBI', label: 'RBI' }, { key: 'SB', label: 'SB' },
+         { key: 'BB', label: 'BB' },
+         { key: 'ptsg', label: 'PTS/G', get: (r) => num(r.ptsg, 2) },
+         { key: 'pts', label: 'Points', cls: 'pts-cell', get: (r) => num(r.pts, 0) }]
+      : [{ key: 'name', label: 'Player', cls: 'txt' },
+         { key: 'team', label: 'Tm', cls: 'txt' },
+         { key: 'G', label: 'G' }, { key: 'GS', label: 'GS' }, { key: 'W', label: 'W' },
+         { key: 'L', label: 'L' }, { key: 'SV', label: 'SV' }, { key: 'HLD', label: 'HLD' },
+         { key: 'IP', label: 'IP', get: (r) => ipFrom(r.IP) }, { key: 'SO', label: 'K' },
+         { key: 'ERA', label: 'ERA', get: (r) => num(r.ERA, 2), ascDefault: true },
+         { key: 'pts', label: 'Points', cls: 'pts-cell', get: (r) => num(r.pts, 0) }];
+    table.replaceChildren(
+      el('div', { class: 'panel-head', style: 'border-top:1px solid var(--border)' },
+        el('h2', {}, `${num(rows.length)} players`),
+        el('span', { class: 'hint' }, batting ? 'Batting' : 'Pitching')),
+      statTable(rows, cols, { rank: true, sortKey: 'pts', limit: 100, page: 100 }));
+  };
+
+  const seg = el('div', { class: 'seg' },
+    el('button', { class: 'on', onclick: (e) => set('batting', e.target) }, 'Batting'),
+    el('button', { onclick: (e) => set('pitching', e.target) }, 'Pitching'));
+  function set(group, btn) {
+    opts.group = group;
+    seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === btn));
+    draw();
+  }
+  draw();
+
+  const missing = ['QS', 'CYCLE', 'GRAND_SLAM', 'NO_HITTER', 'PERFECT_GAME']
+    .filter((c) => !live.pitchingCats.includes(c));
+
+  app().replaceChildren(head,
+    el('div', { class: 'panel live-panel' },
+      el('div', { class: 'panel-head' },
+        el('h2', {}, el('span', { class: 'live-dot' }), `${live.season} season leaders`),
+        el('span', { class: 'hint' },
+          `Fetched ${live.fetchedAt.toLocaleString()} · reload for the latest`)),
+      el('div', { class: 'filters' },
+        el('div', { class: 'field' }, el('label', {}, 'Group'), seg)),
+      table, watermark()),
+    el('div', { class: 'note', html:
+      '<b>Live figures score more categories than the historical pages.</b> The MLB ' +
+      'Stats API carries Holds and Blown Saves, which the historical databank does ' +
+      'not — so a reliever here is scored on ' +
+      `${live.pitchingCats.join(', ')}. Rare-event bonuses (${missing.join(', ')}) ` +
+      'still need play-by-play data and score 0.' }));
+}
+
 // ------------------------------------------------------------ site pages
 
 function renderFooter() {
@@ -1661,6 +1987,7 @@ async function route() {
       case 'year':    await viewYear(arg); break;
       case 'compare': await viewCompare(arg); break;
       case 'scoring': viewScoring(); break;
+      case 'live':    await viewLive(); break;
       case 'about':   viewAbout(); break;
       case 'contact': viewContact(); break;
       case 'privacy': viewPrivacy(); break;

@@ -16,6 +16,7 @@ const ROUTES = [
   ['career',       '#/career'],
   ['season',       '#/season'],
   ['year',         '#/year/1998'],
+  ['live',         '#/live'],
   ['compare',      '#/compare/bondsba01,ruthba01,henderi01'],
   ['scoring',      '#/scoring'],
   ['about',        '#/about'],
@@ -32,7 +33,13 @@ const ROUTES = [
   });
   const page = await browser.newPage({ viewport: { width: 1500, height: 1000 } });
   const errors = [];
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
+  page.on('console', (m) => {
+    // Failed live-stats requests are environmental (this sandbox cannot reach
+    // statsapi.mlb.com); audit_web.js asserts the app handles them properly.
+    const from = (m.location() && m.location().url) || '';
+    if (from.includes('statsapi.mlb.com')) return;
+    if (m.type() === 'error') errors.push(`console: ${m.text()}`);
+  });
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
 
   for (const [name, hash] of ROUTES) {
