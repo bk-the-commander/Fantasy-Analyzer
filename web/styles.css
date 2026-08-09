@@ -1,4 +1,4 @@
-/* Fantasy Analyzer — dense, centred, purple.
+/* Dynasty Sports Analytics — dense, centred, purple.
  *
  * Visual language: Baseball Savant's information density (percentile rails,
  * tight stat tables, headline tiles) in this site's own palette rather than
@@ -156,10 +156,14 @@ em, .italic { font-style: italic; }
 .brand:hover { color: inherit; }
 .brand-mark { display: flex; filter: drop-shadow(0 0 10px var(--accent-line)); }
 .brand-text { display: flex; flex-direction: column; line-height: 1.2; }
+/* Wordmark: DYNASTY in weight, SPORTS ANALYTICS in light italic. Tracking is
+   tighter than a short mark would take, because the full name is 23 characters
+   and still has to sit on one line beside the search box. */
 .brand-name {
-  font-weight: 800; font-size: 15px; letter-spacing: .16em; color: var(--text-strong);
+  font-weight: 800; font-size: 14px; letter-spacing: .1em;
+  color: var(--text-strong); white-space: nowrap;
 }
-.brand-name em { font-weight: 300; color: var(--accent); }
+.brand-name em { font-weight: 300; letter-spacing: .08em; color: var(--accent); }
 .brand-sub { font-size: 10.5px; color: var(--text-faint); letter-spacing: .04em; }
 
 .theme-btn {

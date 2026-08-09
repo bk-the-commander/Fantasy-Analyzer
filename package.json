@@ -1,8 +1,8 @@
 {
-  "name": "fantasy-analyzer",
+  "name": "dynasty-sports-analytics",
   "version": "1.0.0",
   "private": true,
-  "description": "All-time MLB fantasy points explorer for a 12-team H2H points league.",
+  "description": "Dynasty Sports Analytics — all-time MLB fantasy points explorer. A Kaliris Labs project.",
   "scripts": {
     "serve": "python3 -m http.server 8811 -d web",
     "smoke": "node scripts/smoke_web.js"
