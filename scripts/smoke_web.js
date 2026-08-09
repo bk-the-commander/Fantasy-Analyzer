@@ -8,15 +8,20 @@ const OUT = process.argv[3] || '/tmp/shots';
 
 const ROUTES = [
   ['home',         '#/player'],
-  ['player-bonds', '#/player/1715'],
-  ['player-season','#/player/1715?season=2001'],
-  ['player-ohtani','#/player/13838'],
-  ['player-rivera','#/player/15720'],
+  ['player-bonds', '#/player/bondsba01'],
+  ['player-season','#/player/bondsba01?season=2001'],
+  ['player-ohtani','#/player/ohtansh01'],
+  ['player-rivera','#/player/riverma01'],
+  ['player-cobb',  '#/player/cobbty01'],   // pre-1955: exercises the era footnote
   ['career',       '#/career'],
   ['season',       '#/season'],
   ['year',         '#/year/1998'],
-  ['compare',      '#/compare/1715,16250,8064'],
+  ['compare',      '#/compare/bondsba01,ruthba01,henderi01'],
   ['scoring',      '#/scoring'],
+  ['about',        '#/about'],
+  ['contact',      '#/contact'],
+  ['privacy',      '#/privacy'],
+  ['terms',        '#/terms'],
 ];
 
 (async () => {
@@ -65,6 +70,47 @@ const ROUTES = [
   console.log('modern-era row1:', modern);
   await page.screenshot({ path: `${OUT}/season-modern.png` });
   if (errors.length) console.log('INTERACTION ERRORS:', errors.join(' | '));
+
+  // --- theme: auto-by-clock, plus the manual override cycle ---------------
+  for (const [label, hour] of [['day', 13], ['night', 22]]) {
+    const ctx = await browser.newContext({
+      viewport: { width: 1500, height: 1000 },
+      // Freeze the clock so "auto" is deterministic instead of depending on
+      // whatever time the test happens to run at.
+      timezoneId: 'UTC',
+    });
+    const tp = await ctx.newPage();
+    await tp.addInitScript(`{
+      const Real = Date;
+      const fixed = new Real(Real.UTC(2026, 5, 15, ${hour}, 0, 0));
+      globalThis.Date = class extends Real {
+        constructor(...a) { return a.length ? new Real(...a) : new Real(fixed); }
+        static now() { return fixed.getTime(); }
+      };
+    }`);
+    await tp.goto(`${BASE}/#/player/bondsba01`, { waitUntil: 'networkidle' });
+    await tp.waitForTimeout(600);
+    const theme = await tp.evaluate(() => document.documentElement.dataset.theme);
+    console.log(`auto theme @${hour}:00 -> ${theme} (expected ${label === 'day' ? 'light' : 'dark'})`);
+    await tp.screenshot({ path: `${OUT}/theme-${label}.png` });
+    await ctx.close();
+  }
+
+  errors.length = 0;
+  await page.goto(`${BASE}/#/career`, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(500);
+  const cycle = [];
+  for (let i = 0; i < 3; i++) {
+    await page.click('#themeToggle');
+    await page.waitForTimeout(200);
+    cycle.push(await page.evaluate(() =>
+      `${localStorage.getItem('fa-theme')}=${document.documentElement.dataset.theme}`));
+  }
+  console.log('toggle cycle:', cycle.join(' -> '));
+  await page.screenshot({ path: `${OUT}/career-light.png` });
+  const marks = await page.$$eval('.watermark, .chart-mark', (n) => n.length);
+  console.log('watermarks on career page:', marks);
+  if (errors.length) console.log('THEME ERRORS:', errors.join(' | '));
 
   await browser.close();
 })();

@@ -29,12 +29,70 @@ local JSON reads, and the app says so if you try.
 
 | Tab | What it does |
 | --- | --- |
-| Player Lookup | Search all 20,730 players. Career or any single season: point tiles, percentile rails, a points-by-season chart, full stat log. |
+| Player Lookup | Search all 20,653 players. Career or any single season: point tiles, percentile rails, a points-by-season chart, full stat log. |
 | Career Leaders | Every career ranked by league points. Filter by era, position, games; sort by any column. |
 | Season Leaders | The best single seasons ever, same filters. Sort by PTS+ for a fair cross-era read. |
 | Year Explorer | Any season back to 1871 — who would have won your league that year. |
 | Compare | Careers side by side, best value per row highlighted. |
 | Scoring | The league's rules, plus exactly which categories the historical data can and cannot support. |
+| About / Contact / Privacy / Terms | Standard site pages, generated from the config block below. |
+
+**Light and dark, by the clock.** The theme follows the visitor's own local
+time — light between 07:00 and 19:00, dark otherwise — and is applied before
+first paint so the page never flashes. The header button cycles
+auto → light → dark and remembers the choice in `localStorage`. A tab left
+open across sunset follows along on its own.
+
+**Permanent URLs.** Player pages are addressed by the databank's stable player
+id (`#/player/bondsba01`), not by a row number, so links keep working across
+data rebuilds. Old numeric links still resolve.
+
+### Configuring the site
+
+Everything an owner needs to set lives in the `SITE` block at the top of
+`web/app.js` — nothing else hardcodes a name, an address, or a payment link.
+
+| Field | What it's for | Set? |
+| --- | --- | --- |
+| `contactEmail` | Wires up the Contact page and the privacy contact line | **needed** |
+| `legalEntity` | Name used in the copyright line and Terms | **needed** |
+| `jurisdiction` | Governing law for the Terms page | **needed** |
+| `siteUrl` | Canonical URL once deployed | optional |
+| `twitter` / `instagram` / `discord` | Extra contact buttons; blank ones are hidden | optional |
+| `dynasty` | Footer credit line — currently *The Dynasty (6x) 💍* | set |
+| `watermark` | Mark stamped on cards, boards and charts | set |
+| `ads` / `support` | Monetization, both off by default | see below |
+
+Blank fields degrade gracefully — an unset social handle just doesn't render a
+button — so the site is publishable as-is and improves as you fill them in.
+
+### Monetization
+
+Both hooks ship switched off. Turning either on is a one-line change:
+
+```js
+ads:     { enabled: true, client: 'ca-pub-…', slots: { leaderboard: '…', inline: '…' } },
+support: { enabled: true, url: 'https://ko-fi.com/…' },
+```
+
+When `ads.enabled` is false no ad container is rendered at all — an empty
+reserved box on a page with nothing running just reads as broken layout.
+Turning ads on also switches the Privacy page's advertising section from "no
+ads run here" to the full AdSense cookie disclosure, automatically.
+
+**Before charging for any of this, read the licence.** The underlying
+statistics are Lahman / Chadwick Bureau data under
+[CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/). That licence
+*does* permit commercial use, and it requires two things in return:
+attribution (already in the footer and on About) and share-alike on derivative
+databases — if you redistribute the dataset, it goes out under the same terms.
+Ad-supported browsing is squarely fine. Putting the raw dataset behind a paywall
+is where the share-alike clause starts to bite; a subscription that sells
+*tools and analysis* rather than the database itself is the cleaner structure.
+
+Also note the site carries an explicit "not affiliated with MLB" disclaimer in
+the footer and on About. Keep it there — using team and player names
+descriptively is fine, implying endorsement is not.
 
 **PTS+** is the era-adjusted number: a player's points per opportunity (PA for
 hitters, IP for pitchers) divided by that season's qualified-league average,
@@ -78,8 +136,22 @@ computed exactly as the league scores it. Note that a walk scores twice for an
 intentional walk (1 for BB, 1 for IBB), matching how Yahoo applies the two
 categories; it's why Bonds' 2004 is the highest-scoring batting season here.
 
-Coverage runs **1871–2023** (the databank's last complete season), 20,730
-players, 105,150 batting seasons, 47,366 pitching seasons.
+Three further honesty measures, all visible in the UI rather than buried here:
+
+- **Categories nobody was counting yet.** IBB isn't recorded before 1955, HBP
+  before 1887, SB before 1886. Affected seasons are marked `†` in the stat log
+  with an explanatory note, because a 1930 hitter's 0 IBB means "unrecorded",
+  not "never happened" — his points are understated against a modern player's.
+- **Empty seasons are dropped**, not shown as rows of zeroes: 16,996 batting
+  rows (mostly DH-era pitchers who never took a plate appearance) and 41
+  pitching rows. A row survives if the player actually took the opportunity or
+  scored points some other way — a pinch runner with no PA still counts.
+- **PTS+ is withheld below 50 PA / 15 IP.** An era rating off a one-inning
+  cameo is arithmetic, not information; Ty Cobb's single relief inning in 1925
+  came out at 472 before this floor existed. Those cells read `—`.
+
+Coverage runs **1871–2023** (the databank's last complete season), 20,653
+players, 88,154 batting seasons, 47,325 pitching seasons.
 
 ## League settings
 

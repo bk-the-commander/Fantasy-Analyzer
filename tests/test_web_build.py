@@ -107,6 +107,30 @@ def test_era_adjustment_ignores_non_qualifiers_in_the_baseline():
     assert plus.iloc[0] == pytest.approx(100)
 
 
+def test_empty_seasons_are_dropped_but_real_contributions_survive():
+    """A DH-era pitcher who never batted is noise; a pinch runner is not."""
+    df = pd.DataFrame([
+        {"PA": 600, "PTS": 700},   # everyday player
+        {"PA": 0, "PTS": 0},       # pitcher with a batting row and no PA
+        {"PA": 0, "PTS": 5},       # pinch runner: no PA, still scored runs
+    ])
+    kept = web.drop_empty_seasons(df, "PA", "batting")
+    assert len(kept) == 2
+    assert list(kept["PTS"]) == [700, 5]
+
+
+def test_era_adjustment_is_withheld_for_tiny_samples():
+    """One relief inning must not report a 472 rating."""
+    df = pd.DataFrame([
+        {"yearID": 1925, "IP": 200.0, "PTS": 220.0},
+        {"yearID": 1925, "IP": 1.0, "PTS": 5.0},
+    ])
+    plus = web.era_adjust(df, "IP", web.QUAL_SEASON_IP).where(df["IP"] >= web.MIN_RATE_IP)
+    assert plus.iloc[0] == pytest.approx(100)
+    assert pd.isna(plus.iloc[1])
+    assert web.opt(plus.iloc[1]) is None   # serialises as JSON null, renders as "—"
+
+
 def test_top_pool_keeps_every_season_and_team_represented():
     """A global cutoff alone would make year/team filters look broken."""
     rows = []

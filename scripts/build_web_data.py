@@ -71,12 +71,27 @@ SHARD_COUNT = 256
 UNSUPPORTED_BATTING = ["CYCLE", "GRAND_SLAM"]
 UNSUPPORTED_PITCHING = ["HLD", "BS", "QS", "NO_HITTER", "PERFECT_GAME"]
 
+# Scoring categories that exist in the databank but were not recorded by the
+# league before a given season. A 1930 hitter shows 0 IBB because nobody was
+# counting, not because he was never walked intentionally -- so his points are
+# understated against a modern player's. Surfaced in the UI as a footnote on
+# affected seasons rather than quietly buried.
+UNRECORDED_BEFORE = {"IBB": 1955, "HBP": 1887, "SB": 1886}
+
 # Qualifying thresholds for percentile bars and rate leaderboards. Deliberately
 # below the modern 502-PA batting-title cutoff so 19th-century and part-season
 # players are not all discarded, but high enough that a three-game cup of
 # coffee cannot top a rate board.
 QUAL_SEASON_PA = 300
 QUAL_SEASON_IP = 60
+
+# Floor for *displaying* an era-adjusted rating. PTS+ off a one-inning cameo is
+# arithmetic, not information -- Ty Cobb's single relief inning in 1925 came out
+# at 472. Below these, PTS+ is reported as undefined rather than as a number
+# nobody should trust. (The league baseline itself is still set by the stricter
+# QUAL_ thresholds above.)
+MIN_RATE_PA = 50
+MIN_RATE_IP = 15
 QUAL_CAREER_PA = 1500
 QUAL_CAREER_IP = 400
 
@@ -230,7 +245,8 @@ def build_batting(data_dir: Path) -> pd.DataFrame:
     # carried by the databank, so this is off by at most a handful per career.
     bat["PA"] = bat["AB"] + bat["BB"] + bat["HBP"] + bat["SH"] + bat["SF"]
     bat["PTS"] = score_batting(bat)
-    return combine_stints(bat, BAT_COUNTING + ["PA", "PTS"])
+    out = combine_stints(bat, BAT_COUNTING + ["PA", "PTS"])
+    return drop_empty_seasons(out, "PA", "batting")
 
 
 def build_pitching(data_dir: Path) -> pd.DataFrame:
@@ -239,7 +255,25 @@ def build_pitching(data_dir: Path) -> pd.DataFrame:
     out = combine_stints(pit, PIT_COUNTING + ["PTS"])
     out["IP"] = out["IPouts"] / 3.0
     out["ERA"] = np.where(out["IPouts"] > 0, out["ER"] * 27.0 / out["IPouts"], 0.0)
-    return out
+    return drop_empty_seasons(out, "IPouts", "pitching")
+
+
+def drop_empty_seasons(df: pd.DataFrame, denom: str, label: str) -> pd.DataFrame:
+    """Drop player-seasons that carry no real playing time.
+
+    The databank keeps rows that exist for roster bookkeeping rather than
+    performance: an AL pitcher in the DH era with games logged but no plate
+    appearance, a September call-up who never got in. They score 0, tell you
+    nothing, and would render as dead rows on a player page and dead bars on
+    the chart. A row survives if the player actually took the opportunity
+    (PA / outs recorded) or scored points some other way -- a pinch runner can
+    log 0 PA and still score runs and steals.
+    """
+    keep = (df[denom] > 0) | (df["PTS"] != 0)
+    dropped = int((~keep).sum())
+    if dropped:
+        logger.info("Dropped %d empty %s season rows", dropped, label)
+    return df[keep].reset_index(drop=True)
 
 
 def season_positions(data_dir: Path) -> pd.DataFrame:
@@ -339,8 +373,8 @@ def main() -> int:
     bat["POS"] = bat["POS"].fillna("")
     logger.info("Scored %d batting seasons, %d pitching seasons", len(bat), len(pit))
 
-    bat["PTS_PLUS"] = era_adjust(bat, "PA", QUAL_SEASON_PA)
-    pit["PTS_PLUS"] = era_adjust(pit, "IP", QUAL_SEASON_IP)
+    bat["PTS_PLUS"] = era_adjust(bat, "PA", QUAL_SEASON_PA).where(bat["PA"] >= MIN_RATE_PA)
+    pit["PTS_PLUS"] = era_adjust(pit, "IP", QUAL_SEASON_IP).where(pit["IP"] >= MIN_RATE_IP)
     bat["PTS_G"] = np.where(bat["G"] > 0, bat["PTS"] / bat["G"], 0.0)
     pit["PTS_G"] = np.where(pit["G"] > 0, pit["PTS"] / pit["G"], 0.0)
 
@@ -450,13 +484,17 @@ def main() -> int:
 
     # --- search index (columnar: one array per field, aligned by position) --
     index: dict[str, list] = {k: [] for k in
-                             ("ids", "names", "y0", "y1", "pos", "bp", "pp", "hof")}
+                             ("ids", "pid", "names", "y0", "y1", "pos", "bp", "pp", "hof")}
     for row in people.itertuples(index=False):
         pid, n = row.playerID, int(row.nid)
         b, p = cb_rec.get(pid), cp_rec.get(pid)
         years = ([i0(b["yr_min"]), i0(b["yr_max"])] if b else []) + \
                 ([i0(p["yr_min"]), i0(p["yr_max"])] if p else [])
         index["ids"].append(n)
+        # The numeric id is a build artefact -- it shifts whenever the player
+        # set changes. The databank's playerID is stable for all time, so it is
+        # what the site puts in URLs; this array maps one to the other.
+        index["pid"].append(pid)
         index["names"].append(row.Name)
         index["y0"].append(min(years) if years else 0)
         index["y1"].append(max(years) if years else 0)
@@ -578,8 +616,10 @@ def main() -> int:
         "pitching_scoring": PITCHING_SCORING,
         "unsupported_batting": UNSUPPORTED_BATTING,
         "unsupported_pitching": UNSUPPORTED_PITCHING,
+        "unrecorded_before": UNRECORDED_BEFORE,
         "qualifiers": {"season_pa": QUAL_SEASON_PA, "season_ip": QUAL_SEASON_IP,
-                       "career_pa": QUAL_CAREER_PA, "career_ip": QUAL_CAREER_IP},
+                       "career_pa": QUAL_CAREER_PA, "career_ip": QUAL_CAREER_IP,
+                       "rate_pa": MIN_RATE_PA, "rate_ip": MIN_RATE_IP},
         "teams": {k: v["name"] for k, v in team_info.items()},
         "franchises": {k: v["franch"] for k, v in team_info.items()},
         "shards": SHARD_COUNT,
