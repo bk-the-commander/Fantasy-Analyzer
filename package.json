@@ -6,10 +6,10 @@
   "scripts": {
     "serve": "python3 -m http.server 8811 -d web",
     "smoke": "node scripts/smoke_web.js",
-    "sot:build": "python3 source-of-truth/scripts/build.py",
-    "sot:check": "node source-of-truth/scripts/engine_check.js",
-    "sot:smoke": "npm run sot:build && node source-of-truth/scripts/smoke.js",
-    "sot:serve": "python3 -m http.server 8812 -d source-of-truth/src"
+    "sot:build": "python3 sot/scripts/build.py",
+    "sot:check": "node sot/scripts/engine_check.js",
+    "sot:smoke": "npm run sot:build && node sot/scripts/smoke.js",
+    "sot:serve": "python3 -m http.server 8813 -d sot/src"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
