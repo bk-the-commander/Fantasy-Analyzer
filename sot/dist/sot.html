@@ -791,6 +791,17 @@ input.in::placeholder { color: var(--ink-3); }
       (clusters[root] || (clusters[root] = [])).push(e);
     });
 
+    // Index the applied links by record key. Scanning the whole edge list for
+    // every record is quadratic, and was by a wide margin the slowest step in
+    // the pipeline on a large tenant.
+    const strongByKey = new Map();
+    strong.forEach((e) => {
+      if (!strongByKey.has(e.a)) strongByKey.set(e.a, []);
+      if (!strongByKey.has(e.b)) strongByKey.set(e.b, []);
+      strongByKey.get(e.a).push(e);
+      strongByKey.get(e.b).push(e);
+    });
+
     const entities = [];
     const unresolved = [];
     const entityByRecordKey = {};
@@ -1521,12 +1532,26 @@ input.in::placeholder { color: var(--ink-3); }
   const STREETS = ['Ashgrove Lane','Kestrel Way','Fenwick Road','Bramble Court','Aldwyn Street','Copperline Drive','Marsh Hollow','Yarrow Close','Ridgeway Terrace','Lantern Row','Halstead Avenue','Wexley Green'];
 
   function makeNamer(rand) {
+    const shuffle = (arr) => {
+      const a = arr.slice();
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(rand() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    };
+    // Walk shuffled pools with independent cursors rather than sampling at
+    // random: random sampling clusters, and a demo where four people in a row
+    // share a first name reads as broken data.
+    let firsts = shuffle(FIRST), lasts = shuffle(LAST), fi = 0, li = 0;
     const used = new Set();
     return function name() {
       let first, last, key, guard = 0;
       do {
-        first = FIRST[Math.floor(rand() * FIRST.length)];
-        last = LAST[Math.floor(rand() * LAST.length)];
+        if (fi >= firsts.length) { firsts = shuffle(FIRST); fi = 0; }
+        if (li >= lasts.length) { lasts = shuffle(LAST); li = 0; }
+        first = firsts[fi++];
+        last = lasts[li++];
         key = first + ' ' + last;
       } while (used.has(key) && guard++ < 400);
       used.add(key);
@@ -1553,6 +1578,815 @@ input.in::placeholder { color: var(--ink-3); }
   }
 
   SOT.gen = { mulberry32, makeNamer, helpers, DAY, FIRST, LAST };
+})(window.SOT || (window.SOT = {}));
+</script>
+<script>
+/* --- core/packs/kit.js --- */
+/* SOT — vertical pack toolkit.
+ *
+ * "Works for any industry" is only true if adding one is a declaration rather
+ * than a project. This file is what makes that true.
+ *
+ * Almost every organization that would buy this product has the same shape
+ * underneath the vocabulary:
+ *
+ *     site      somewhere work happens        hospital · campus · branch · terminal · salon
+ *     group     a team inside a site          ward · department · desk · lane · chair row
+ *     worker    someone who does the work     nurse · lecturer · adviser · driver · stylist
+ *     client    someone the work is done for  patient · student · household · shipper · guest
+ *     event     a dated thing that joins them visit · enrolment · review · load · appointment
+ *
+ * A pack declares its vocabulary, its source systems, which system carries
+ * which field, how many of everything to generate, and which of the standard
+ * data-quality failures to inject. The kit turns that into source records,
+ * adapters, a time-bounded edge set and statistics — the same inputs the
+ * hand-written health and defence packs produce, so nothing downstream can
+ * tell the difference.
+ *
+ * Everything generated here is synthetic and deterministic.
+ */
+(function (SOT) {
+  'use strict';
+
+  const DAY = 86400000;
+  const N = () => SOT.schema.norm;
+
+  /* ---------------------------------------------------------- field catalog
+   *
+   * Fixed keys, renameable labels. A "credential expiry" is a nursing licence
+   * in one pack, a commercial driving medical certificate in another, and a
+   * securities registration in a third — same field, same failure mode, same
+   * consequence, different word on the screen.
+   */
+  const FIELD_SPECS = [
+    ['worker', 'fullName', 'Full name', 'identity', 'public', 1, 7],
+    ['worker', 'workEmail', 'Work email', 'identity', 'public', 2, 7],
+    ['worker', 'employeeId', 'Employee ID', 'identity', 'internal', 2, 30],
+    ['worker', 'jobTitle', 'Job title', 'role', 'public', 2, 14],
+    ['worker', 'credential', 'Credential', 'credential', 'public', 3, 14],
+    ['worker', 'credentialId', 'Credential number', 'credential', 'internal', 3, 30],
+    ['worker', 'credentialExpiry', 'Credential expires', 'credential', 'internal', 5, 7],
+    ['worker', 'credentialStatus', 'Credential status', 'credential', 'internal', 5, 7],
+    ['worker', 'homeGroup', 'Assigned group', 'role', 'internal', 4, 7],
+    ['worker', 'employmentStatus', 'Employment status', 'identity', 'internal', 5, 2],
+    ['worker', 'employmentType', 'Employment type', 'identity', 'internal', 2, 30],
+    ['worker', 'hireDate', 'Start date', 'identity', 'internal', 1, 30],
+    ['worker', 'accessStatus', 'System access', 'access', 'internal', 4, 2],
+
+    ['client', 'fullName', 'Name', 'identity', 'confidential', 3, 7],
+    ['client', 'clientRef', 'Reference', 'identity', 'confidential', 4, 30],
+    ['client', 'dob', 'Date of birth', 'identity', 'protected', 5, 7],
+    ['client', 'phone', 'Phone', 'contact', 'protected', 1, 14],
+    ['client', 'email', 'Email', 'contact', 'protected', 1, 14],
+    ['client', 'address', 'Address', 'contact', 'protected', 1, 14],
+    ['client', 'plan', 'Plan', 'commercial', 'confidential', 2, 14],
+    ['client', 'clientStatus', 'Status', 'identity', 'confidential', 3, 7],
+
+    ['group', 'groupName', 'Name', 'identity', 'public', 2, 30],
+    ['group', 'groupCode', 'Code', 'identity', 'public', 3, 30],
+    ['group', 'siteCode', 'Site', 'structure', 'public', 3, 30],
+    ['group', 'category', 'Category', 'structure', 'public', 2, 30],
+    ['group', 'capacity', 'Capacity', 'structure', 'internal', 2, 30],
+    ['group', 'costCenter', 'Cost centre', 'structure', 'internal', 2, 30],
+
+    ['site', 'siteName', 'Name', 'identity', 'public', 2, 30],
+    ['site', 'siteCode', 'Code', 'identity', 'public', 3, 30],
+    ['site', 'city', 'City', 'structure', 'public', 1, 30],
+    ['site', 'siteType', 'Type', 'structure', 'public', 1, 30],
+    ['site', 'capacity', 'Capacity', 'structure', 'internal', 1, 30],
+
+    ['event', 'eventLabel', 'Record', 'identity', 'confidential', 2, 30],
+    ['event', 'eventType', 'Type', 'identity', 'confidential', 2, 30],
+    ['event', 'startAt', 'Started', 'timing', 'confidential', 3, 30],
+    ['event', 'endAt', 'Ended', 'timing', 'confidential', 3, 30],
+    ['event', 'outcome', 'Outcome', 'timing', 'confidential', 2, 30],
+    ['event', 'quantity', 'Quantity', 'commercial', 'confidential', 4, 7],
+    ['event', 'channel', 'Channel', 'commercial', 'confidential', 2, 14],
+    ['event', 'eventStatus', 'Status', 'commercial', 'confidential', 2, 7],
+  ];
+
+  const EDGE_SPECS = [
+    ['reports_to', 'worker', 'worker', true, false],
+    ['assigned_to', 'worker', 'group', true, false],
+    ['part_of', 'group', 'site', false, false],
+    ['served_by', 'client', 'worker', true, false],
+    ['event_client', 'event', 'client', false, false],
+    ['event_group', 'event', 'group', false, false],
+    ['event_team', 'event', 'worker', false, true],
+  ];
+
+  /* ------------------------------------------------------- statistics library
+   *
+   * Generic over the skeleton, renameable per pack. `quantityLabel` might be
+   * "length of stay", "billable hours", "miles" or "credit hours" — the
+   * arithmetic is the same.
+   */
+  function statsFor(spec) {
+    const L = spec.statLabels || {};
+    const lbl = (k, d) => L[k] || d;
+    const eventsOfWorker = (id, ctx) => ctx.graph.neighbours(id, 'event_team', { dir: 'in' }).map((n) => ctx.profiles[n.entity.id]);
+    const eventsOfClient = (id, ctx) => ctx.graph.neighbours(id, 'event_client', { dir: 'in' }).map((n) => ctx.profiles[n.entity.id]);
+    const eventsOfGroup = (id, ctx) => ctx.graph.neighbours(id, 'event_group', { dir: 'in' }).map((n) => ctx.profiles[n.entity.id]);
+    const within = (list, days, asOf) => list.filter((e) => e && e.get('startAt') && asOf - e.get('startAt') <= days * DAY);
+    const avg = (xs) => (xs.length ? Number((xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(1)) : null);
+    const qty = (list) => list.map((e) => e.get('quantity')).filter((v) => v != null);
+
+    return {
+      worker: [
+        { id: 'events90', label: lbl('workerEvents', 'Records handled'), hint: 'Last 90 days', fmt: 'int',
+          calc: (p, ctx) => within(eventsOfWorker(p.entity.id, ctx), 90, ctx.asOf).length },
+        { id: 'clients', label: lbl('workerClients', 'People served'), hint: 'All time, distinct', fmt: 'int', sensitivity: 'confidential',
+          calc: (p, ctx) => new Set(eventsOfWorker(p.entity.id, ctx).map((e) => {
+            const c = ctx.graph.neighbour(e.entity.id, 'event_client', { dir: 'out' });
+            return c ? c.entity.id : null;
+          }).filter(Boolean)).size },
+        { id: 'book', label: lbl('workerBook', 'Assigned book'), hint: 'Where they are the primary contact', fmt: 'int', sensitivity: 'confidential',
+          calc: (p, ctx) => ctx.graph.neighbours(p.entity.id, 'served_by', { dir: 'in', when: 'current', at: ctx.asOf }).length },
+        { id: 'groups', label: lbl('workerGroups', 'Groups worked'), hint: 'Including previous assignments', fmt: 'int',
+          calc: (p, ctx) => new Set(ctx.graph.neighbours(p.entity.id, 'assigned_to', { dir: 'out' }).map((n) => n.entity.id)).size },
+        { id: 'avgQty', label: lbl('workerAvg', 'Average size'), hint: spec.quantityHint || 'Per record handled', fmt: spec.quantityFmt || 'int',
+          calc: (p, ctx) => avg(qty(eventsOfWorker(p.entity.id, ctx))) },
+        { id: 'tenure', label: 'Tenure', hint: 'Since start date', fmt: 'years',
+          calc: (p, ctx) => (p.get('hireDate') ? Number(((ctx.asOf - p.get('hireDate')) / (365 * DAY)).toFixed(1)) : null) },
+      ],
+      client: [
+        { id: 'events', label: lbl('clientEvents', 'Records'), hint: 'All time', fmt: 'int', sensitivity: 'protected',
+          calc: (p, ctx) => eventsOfClient(p.entity.id, ctx).length },
+        { id: 'events12', label: lbl('clientEvents', 'Records'), hint: 'Last 12 months', fmt: 'int', sensitivity: 'protected',
+          calc: (p, ctx) => within(eventsOfClient(p.entity.id, ctx), 365, ctx.asOf).length },
+        { id: 'last', label: lbl('clientLast', 'Last seen'), hint: 'Most recent record', fmt: 'date', sensitivity: 'protected',
+          calc: (p, ctx) => {
+            const ds = eventsOfClient(p.entity.id, ctx).map((e) => e && e.get('startAt')).filter(Boolean);
+            return ds.length ? Math.max.apply(null, ds) : null;
+          } },
+        { id: 'total', label: lbl('clientTotal', 'Lifetime total'), hint: spec.quantityHint || 'Across every record', fmt: spec.quantityFmt || 'int', sensitivity: 'protected',
+          calc: (p, ctx) => {
+            const q = qty(eventsOfClient(p.entity.id, ctx));
+            return q.length ? Number(q.reduce((a, b) => a + b, 0).toFixed(1)) : null;
+          } },
+        { id: 'people', label: lbl('clientPeople', 'People involved'), hint: 'Distinct, all records', fmt: 'int', sensitivity: 'protected',
+          calc: (p, ctx) => {
+            const set = new Set();
+            eventsOfClient(p.entity.id, ctx).forEach((e) =>
+              e && ctx.graph.neighbours(e.entity.id, 'event_team', { dir: 'out' }).forEach((n) => set.add(n.entity.id)));
+            return set.size;
+          } },
+      ],
+      group: [
+        { id: 'events90', label: lbl('groupEvents', 'Records'), hint: 'Last 90 days', fmt: 'int',
+          calc: (p, ctx) => within(eventsOfGroup(p.entity.id, ctx), 90, ctx.asOf).length },
+        { id: 'staffNow', label: lbl('groupStaff', 'Assigned now'), hint: 'Currently on this group', fmt: 'int',
+          calc: (p, ctx) => ctx.graph.neighbours(p.entity.id, 'assigned_to', { dir: 'in', when: 'current', at: ctx.asOf }).length },
+        { id: 'staffEver', label: lbl('groupEver', 'Ever assigned'), hint: 'Including people who left', fmt: 'int',
+          calc: (p, ctx) => new Set(ctx.graph.neighbours(p.entity.id, 'assigned_to', { dir: 'in' }).map((n) => n.entity.id)).size },
+        { id: 'avgQty', label: lbl('groupAvg', 'Average size'), hint: spec.quantityHint || 'Per record', fmt: spec.quantityFmt || 'int',
+          calc: (p, ctx) => avg(qty(eventsOfGroup(p.entity.id, ctx))) },
+        { id: 'perCap', label: lbl('groupPerCap', 'Per unit of capacity'), hint: 'Last 90 days', fmt: 'ratio',
+          calc: (p, ctx) => {
+            const cap = p.get('capacity');
+            return cap ? Number((within(eventsOfGroup(p.entity.id, ctx), 90, ctx.asOf).length / cap).toFixed(1)) : null;
+          } },
+      ],
+      site: [
+        { id: 'groups', label: lbl('siteGroups', 'Groups'), hint: 'Based here', fmt: 'int',
+          calc: (p, ctx) => ctx.graph.neighbours(p.entity.id, 'part_of', { dir: 'in' }).length },
+        { id: 'staff', label: lbl('siteStaff', 'People'), hint: 'Currently assigned across groups', fmt: 'int',
+          calc: (p, ctx) => {
+            const set = new Set();
+            ctx.graph.neighbours(p.entity.id, 'part_of', { dir: 'in' }).forEach((g) =>
+              ctx.graph.neighbours(g.entity.id, 'assigned_to', { dir: 'in', when: 'current', at: ctx.asOf }).forEach((w) => set.add(w.entity.id)));
+            return set.size;
+          } },
+        { id: 'events90', label: lbl('siteEvents', 'Records'), hint: 'Last 90 days', fmt: 'int',
+          calc: (p, ctx) => {
+            let n = 0;
+            ctx.graph.neighbours(p.entity.id, 'part_of', { dir: 'in' }).forEach((g) => { n += within(eventsOfGroup(g.entity.id, ctx), 90, ctx.asOf).length; });
+            return n;
+          } },
+      ],
+      event: [
+        { id: 'qty', label: lbl('eventQty', 'Size'), hint: spec.quantityHint || 'As recorded', fmt: spec.quantityFmt || 'int', sensitivity: 'confidential',
+          calc: (p) => p.get('quantity') },
+        { id: 'team', label: lbl('eventTeam', 'People involved'), hint: 'Attached to this record', fmt: 'int', sensitivity: 'confidential',
+          calc: (p, ctx) => ctx.graph.neighbours(p.entity.id, 'event_team', { dir: 'out' }).length },
+        { id: 'daysAgo', label: 'Days ago', hint: 'Since it started', fmt: 'int', sensitivity: 'confidential',
+          calc: (p, ctx) => (p.get('startAt') ? Math.round((ctx.asOf - p.get('startAt')) / DAY) : null) },
+      ],
+    };
+  }
+
+  /* ---------------------------------------------------------- world builder */
+
+  function buildWorld(spec) {
+    const rand = SOT.gen.mulberry32(spec.seed || 20260210);
+    const h = SOT.gen.helpers(rand);
+    const namer = SOT.gen.makeNamer(rand);
+    const asOf = spec.asOf || Date.parse('2026-02-10T14:20:00Z');
+    const w = spec.world;
+    const sysRoles = spec.systemRoles || {};
+
+    const syncState = {};
+    spec.systems.forEach((s) => {
+      syncState[s.id] = Object.assign({ lastSync: asOf - (s.sync && s.sync.agoMs != null ? s.sync.agoMs : h.between(1, 10) * 3600000), status: 'healthy' },
+        s.sync || {});
+      if (s.sync && s.sync.agoDays != null) syncState[s.id].lastSync = asOf - s.sync.agoDays * DAY;
+    });
+
+    let seq = 0;
+    const nat = (prefix, i) => prefix + String(100000 + i * 7).slice(-6);
+    const entities = { site: [], group: [], worker: [], client: [], event: [] };
+    const notes = [];
+    const note = (kind, who, detail) => notes.push({ kind, who, detail });
+
+    /* sites */
+    w.sites.forEach((s, i) => entities.site.push({
+      slot: 'site', key: s.code, idx: i,
+      f: { siteName: s.name, siteCode: s.code, city: s.city, siteType: s.type, capacity: s.capacity == null ? null : s.capacity },
+      overrides: {}, present: {},
+    }));
+
+    /* groups */
+    w.groups.forEach((g, i) => entities.group.push({
+      slot: 'group', key: g.code, idx: i, site: g.site,
+      f: { groupName: g.name, groupCode: g.code, siteCode: g.site, category: g.category,
+           capacity: g.capacity == null ? null : g.capacity, costCenter: 'CC-' + g.code },
+      overrides: {}, present: {},
+    }));
+
+    /* workers: a leadership spine, then each group's roster */
+    const workers = entities.worker;
+    function addWorker(o) {
+      seq++;
+      const nm = namer();
+      const wk = Object.assign({
+        slot: 'worker', idx: seq, key: 'W' + seq,
+        f: {
+          fullName: nm.full,
+          workEmail: (nm.first + '.' + nm.last).toLowerCase() + '@' + (spec.domain || 'example.com'),
+          employeeId: 'E' + String(200000 + seq * 13).slice(-6),
+          jobTitle: o.title,
+          credential: o.credential || null,
+          credentialId: o.credential ? 'C' + h.between(100000, 999999) : null,
+          credentialExpiry: o.credential ? asOf + h.between(70, 900) * DAY : null,
+          credentialStatus: o.credential ? 'Active' : null,
+          homeGroup: o.group || null,
+          employmentStatus: 'Active',
+          employmentType: o.employmentType || 'Employee',
+          hireDate: asOf - h.between(180, 3600) * DAY,
+          accessStatus: 'Active',
+        },
+        group: o.group || null,
+        managerKey: o.managerKey || null,
+        lead: !!o.lead,
+        overrides: {}, present: {}, extraRecords: [],
+      }, o.extra || {});
+      workers.push(wk);
+      return wk;
+    }
+
+    const exec = addWorker({ title: w.leadership[0], credential: w.leadCredential || null, lead: true });
+    const leaders = [exec];
+    (w.leadership.slice(1) || []).forEach((t) => leaders.push(addWorker({ title: t, credential: w.leadCredential || null, managerKey: exec.key, lead: true })));
+
+    w.groups.forEach((g, gi) => {
+      const boss = leaders[1 + (gi % Math.max(1, leaders.length - 1))] || exec;
+      const lead = addWorker({ title: w.groupLeadTitle, credential: w.leadCredential || h.pick(w.credentials), group: g.code, managerKey: boss.key, lead: true });
+      (g.roster || w.defaultRoster).forEach((r) => {
+        for (let i = 0; i < r.count; i++) {
+          addWorker({ title: r.title, credential: r.credential === null ? null : (r.credential || h.pick(w.credentials)), group: g.code, managerKey: lead.key });
+        }
+      });
+    });
+
+    /* clients */
+    for (let i = 0; i < w.clients.count; i++) {
+      const nm = namer();
+      entities.client.push({
+        slot: 'client', idx: i, key: 'C' + i,
+        f: {
+          fullName: nm.full,
+          clientRef: (w.clients.refPrefix || 'REF-') + String(400000 + i * 37).slice(-6),
+          dob: w.clients.dob === false ? null : Date.parse('1945-01-01') + Math.floor(rand() * (Date.parse('2010-01-01') - Date.parse('1945-01-01'))),
+          phone: '(555) ' + h.between(200, 989) + '-' + String(h.between(1000, 9999)),
+          email: (nm.first + '.' + nm.last).toLowerCase() + '@' + h.pick(['mailbox.example', 'postbox.example', 'inbox.example']),
+          address: h.between(12, 980) + ' ' + h.street() + ', ' + h.pick(w.sites.map((s) => s.city.split(',')[0])),
+          plan: h.pick(w.clients.plans),
+          clientStatus: 'Active',
+        },
+        overrides: {}, present: {}, extraRecords: [],
+      });
+    }
+
+    /* events */
+    const groupWorkers = {};
+    workers.forEach((wk) => { if (wk.group) (groupWorkers[wk.group] || (groupWorkers[wk.group] = [])).push(wk); });
+
+    let ev = 0;
+    entities.client.forEach((c, ci) => {
+      const home = w.groups[ci % w.groups.length];
+      const count = h.between(w.events.perClient[0], w.events.perClient[1]);
+      for (let i = 0; i < count; i++) {
+        const g = h.chance(0.6) ? home : h.pick(w.groups);
+        const roster = groupWorkers[g.code] || [];
+        if (!roster.length) continue;
+        const type = h.pick(w.events.types);
+        const start = asOf - h.between(2, w.events.windowDays || 700) * DAY - h.between(0, 20) * 3600000;
+        const durationH = h.between(type.hours ? type.hours[0] : 1, type.hours ? type.hours[1] : 6);
+        const end = start + durationH * 3600000;
+        if (end > asOf) continue;
+        ev++;
+        const team = h.shuffle(roster).slice(0, h.between(1, Math.min(3, roster.length)));
+        const leadWorker = roster.find((x) => x.lead) || team[0];
+        entities.event.push({
+          slot: 'event', idx: ev, key: 'V' + ev,
+          clientKey: c.key, groupKey: g.code, siteKey: g.site,
+          teamKeys: team.map((t) => t.key), leadKey: leadWorker.key,
+          f: {
+            eventLabel: type.name + ' · ' + new Date(start).toISOString().slice(0, 10),
+            eventType: type.name,
+            startAt: start,
+            endAt: end,
+            outcome: h.pick(w.events.outcomes),
+            quantity: type.quantity ? h.between(type.quantity[0], type.quantity[1]) : Number((durationH / 24).toFixed(1)),
+            channel: c.f.plan,
+            eventStatus: h.pick(w.events.statuses || ['Complete', 'Complete', 'Complete', 'In review', 'Disputed']),
+          },
+          overrides: {}, present: {}, extraRecords: [],
+        });
+      }
+    });
+
+    /* --------------------------------------------- deliberate imperfections */
+    const A = spec.anomalies || {};
+    const nonLead = workers.filter((x) => x.group && !x.lead);
+    const pickWorkers = (n) => h.shuffle(nonLead).slice(0, n);
+
+    if (A.ghostAccess) {
+      pickWorkers(A.ghostAccess).forEach((wk) => {
+        wk.f.employmentStatus = 'Terminated';
+        wk.terminatedAt = asOf - h.between(20, 80) * DAY;
+        [sysRoles.primary, sysRoles.access, sysRoles.schedule].filter(Boolean).forEach((s) => {
+          wk.overrides[s] = Object.assign(wk.overrides[s] || {}, { employmentStatus: 'Active', accessStatus: 'Active' });
+        });
+        note('ghost-access', wk.f.fullName, 'Terminated in the system of record; operational systems still show them active.');
+      });
+    }
+
+    // Whoever is furthest behind among the systems that carry employment
+    // status is the one that will still be showing a leaver as present. Found
+    // rather than assumed, so a pack cannot accidentally lose its lag example
+    // by changing which connector is slow.
+    const statusSystems = spec.systems
+      .filter((sy) => sy.provides && sy.provides.worker && sy.provides.worker.fields.employmentStatus)
+      .map((sy) => sy.id)
+      .sort((a, b) => syncState[a].lastSync - syncState[b].lastSync);
+    const stalest = statusSystems.find((sy) => sy !== sysRoles.hr && asOf - syncState[sy].lastSync > 2 * DAY);
+
+    if (A.badgeLag && stalest) {
+      pickWorkers(A.badgeLag).forEach((wk) => {
+        wk.f.employmentStatus = 'Terminated';
+        wk.terminatedAt = asOf - 5 * DAY;
+        wk.statusEffectiveFrom = asOf - 5 * DAY;
+        wk.overrides[stalest] = Object.assign(wk.overrides[stalest] || {}, { employmentStatus: 'Active', accessStatus: 'Active' });
+        note('lag', wk.f.fullName, 'Left five days ago. Only the connector that has not been read since still shows them active — behind, not wrong.');
+      });
+    }
+
+    if (A.credentialLapsed) {
+      pickWorkers(A.credentialLapsed).filter((x) => x.f.credential).forEach((wk) => {
+        wk.f.credentialExpiry = asOf - h.between(4, 60) * DAY;
+        wk.f.credentialStatus = 'Expired';
+        note('credential-lapsed', wk.f.fullName, 'Credential expired but the person is still rostered and still has access.');
+      });
+    }
+
+    if (A.groupTransfer) {
+      pickWorkers(A.groupTransfer).forEach((wk) => {
+        const to = h.pick(w.groups.filter((g) => g.code !== wk.group));
+        wk.priorGroup = wk.group;
+        wk.group = to.code;
+        wk.f.homeGroup = to.code;
+        wk.groupEffectiveFrom = asOf - 4 * DAY;
+        if (sysRoles.hr) wk.overrides[sysRoles.hr] = Object.assign(wk.overrides[sysRoles.hr] || {}, { homeGroup: wk.priorGroup });
+        note('transfer', wk.f.fullName, 'Moved groups four days ago; the slower system still carries the old assignment.');
+      });
+    }
+
+    if (A.credentialDrift && sysRoles.primary) {
+      pickWorkers(A.credentialDrift).filter((x) => x.f.credential).forEach((wk) => {
+        wk.overrides[sysRoles.primary] = Object.assign(wk.overrides[sysRoles.primary] || {},
+          { credential: h.pick(w.credentials.filter((c) => c !== wk.f.credential)) });
+        note('credential-drift', wk.f.fullName, 'The operational system shows a credential the person no longer holds.');
+      });
+    }
+
+    if (A.idGap && sysRoles.primary) {
+      pickWorkers(A.idGap).forEach((wk) => {
+        wk.overrides[sysRoles.primary] = Object.assign(wk.overrides[sysRoles.primary] || {}, { employeeId: null });
+        note('id-gap', wk.f.fullName, 'Employee ID is blank on the operational record, breaking the join to payroll.');
+      });
+    }
+
+    if (A.titleDrift && sysRoles.primary) {
+      pickWorkers(A.titleDrift).forEach((wk) => {
+        wk.overrides[sysRoles.primary] = Object.assign(wk.overrides[sysRoles.primary] || {}, { jobTitle: w.staleTitle || 'Associate' });
+        note('title-drift', wk.f.fullName, 'A promotion recorded in HR was never reflected downstream.');
+      });
+    }
+
+    if (A.scheduledChange) {
+      pickWorkers(A.scheduledChange).filter((x) => x.f.employmentStatus === 'Active').forEach((wk) => {
+        wk.scheduled = { field: 'employmentStatus', value: w.scheduledStatus || 'On leave', from: asOf + h.between(14, 45) * DAY };
+        note('scheduled', wk.f.fullName, 'A future-dated change. Recorded, and correctly not counted as a discrepancy.');
+      });
+    }
+
+    if (A.contractors) {
+      for (let i = 0; i < A.contractors; i++) {
+        const wk = addWorker({
+          title: w.contractorTitle || 'Contractor', credential: h.pick(w.credentials),
+          group: h.pick(w.groups).code, employmentType: 'Contractor',
+        });
+        wk.group = wk.f.homeGroup;
+        if (sysRoles.hr) wk.present[sysRoles.hr] = false;
+        wk.noHr = true;
+        note('no-hr-record', wk.f.fullName, 'Working, scheduled and credentialed with no record in the system of record.');
+      }
+    }
+
+    if (A.duplicateWorker && sysRoles.primary) {
+      const wk = nonLead[Math.floor(nonLead.length / 3)];
+      if (wk) {
+        wk.extraRecords.push({ system: sysRoles.primary, suffix: 'X', overrides: { workEmail: wk.f.workEmail.replace('@', '.prior@') } });
+        note('duplicate-account', wk.f.fullName, 'Two active accounts in the same system share one employee number.');
+      }
+    }
+
+    if (A.duplicateClient && sysRoles.master) {
+      const c = entities.client[7] || entities.client[0];
+      if (c) {
+        c.extraRecords.push({ system: sysRoles.master, suffix: 'D',
+          overrides: { clientRef: (w.clients.refPrefix || 'REF-') + '999999' } });
+        note('duplicate-client', c.f.fullName, 'Two references in the same system share a name and date of birth. The history is split across both.');
+      }
+    }
+
+    if (A.clientMismatch && sysRoles.billing) {
+      h.shuffle(entities.client).slice(0, A.clientMismatch).forEach((c) => {
+        const o = {};
+        if (c.f.dob) o.dob = c.f.dob + h.between(1, 2) * 365 * DAY;
+        o.phone = '(555) ' + h.between(200, 989) + '-' + String(h.between(1000, 9999));
+        c.overrides[sysRoles.billing] = Object.assign(c.overrides[sysRoles.billing] || {}, o);
+        note('client-mismatch', c.f.fullName, 'Registration and billing disagree on identifying details.');
+      });
+    }
+
+    if (A.quantityMismatch && sysRoles.billing) {
+      h.shuffle(entities.event).slice(0, A.quantityMismatch).forEach((e) => {
+        const delta = h.pick([-1, 1, 2]);
+        const alt = Math.max(1, Number((e.f.quantity + delta).toFixed(1)));
+        e.overrides[sysRoles.billing] = Object.assign(e.overrides[sysRoles.billing] || {}, { quantity: alt });
+        note('quantity-mismatch', e.f.eventLabel, 'What was delivered and what was billed do not agree on the same record.');
+      });
+    }
+
+    if (A.orphanAccounts && sysRoles.primary) {
+      for (let i = 0; i < A.orphanAccounts; i++) {
+        const label = (w.orphanNames || ['Shared Terminal', 'Training Account'])[i % 2];
+        entities.worker.push({
+          slot: 'worker', idx: 9000 + i, key: 'ORPH' + i, orphanIn: sysRoles.primary,
+          f: { fullName: label, workEmail: label.toLowerCase().replace(/[^a-z]/g, '.') + '@' + (spec.domain || 'example.com'),
+               employeeId: null, jobTitle: null, credential: null, credentialId: null, credentialExpiry: null,
+               credentialStatus: null, homeGroup: h.pick(w.groups).code, employmentStatus: 'Active',
+               employmentType: null, hireDate: null, accessStatus: 'Active' },
+          group: null, managerKey: null, overrides: {}, present: {}, extraRecords: [],
+        });
+        note('orphan-account', label, 'A shared login with live access and no owner.');
+      }
+    }
+
+    /* cost-centre disagreement on exactly one group keeps the structural
+       reconciliation honest without flooding the queue */
+    if (A.costCentre && sysRoles.schedule) {
+      const g = entities.group[Math.min(3, entities.group.length - 1)];
+      g.overrides[sysRoles.schedule] = { costCenter: 'CC-' + g.key + '-ALT' };
+      note('cost-centre', g.f.groupName, 'Finance and scheduling carry different cost centres for the same group.');
+    }
+
+    return { entities, syncState, notes, asOf, h, rand, nat };
+  }
+
+  /* ------------------------------------------------------- records + adapters */
+
+  // Which identity keys a record of each kind exposes, given its canonical
+  // values and the raw vendor row.
+  const KEY_BUILDERS = {
+    worker: (c, raw) => ({
+      employeeId: c.employeeId, email: c.workEmail, name: N().name(c.fullName), badge: raw._badge || null,
+    }),
+    client: (c) => ({
+      mrn: c.clientRef, nameDob: c.dob ? N().name(c.fullName) + '|' + c.dob : null, name: N().name(c.fullName),
+    }),
+    group: (c) => ({ code: c.groupCode }),
+    site: (c) => ({ code: c.siteCode }),
+    event: (c, raw) => ({ code: raw.eventLabelKey }),
+  };
+
+  function build(spec) {
+    const world = buildWorld(spec);
+    const { entities, syncState, notes, asOf } = world;
+    const sysRoles = spec.systemRoles || {};
+    const records = {};
+    spec.systems.forEach((s) => { records[s.id] = []; });
+
+    // Deterministic native identifier per (system, entity).
+    const natId = (sys, slot, e, suffix) => {
+      const p = (sys.idPrefix || sys.id.slice(0, 3).toUpperCase()) + '-';
+      return p + slot[0].toUpperCase() + String(100000 + (e.idx + 1) * 17).slice(-6) + (suffix || '');
+    };
+
+    function valueFor(e, sysId, field) {
+      const o = e.overrides[sysId];
+      if (o && Object.prototype.hasOwnProperty.call(o, field)) return o[field];
+      return e.f[field];
+    }
+
+    // For every system, for every entity type it carries, emit a native record
+    // whose property names are that vendor's, not ours.
+    spec.systems.forEach((sys) => {
+      Object.keys(sys.provides || {}).forEach((slot) => {
+        const p = sys.provides[slot];
+        (entities[slot] || []).forEach((e) => {
+          if (e.present[sys.id] === false) return;
+          if (e.orphanIn && e.orphanIn !== sys.id) return;
+          if (p.only && !p.only(e)) return;
+          const make = (suffix, extraOverrides) => {
+            const generated = natId(sys, slot, e, suffix);
+            const rec = { _type: slot, observedAt: syncState[sys.id].lastSync, _key: e.key };
+            // The native id goes down first so that a system whose primary key
+            // *is* the employee number (Workday's worker ID, a payroll number)
+            // keeps the real value rather than a generated one. Getting this
+            // backwards silently breaks identity matching for that system.
+            rec[p.id] = generated;
+            Object.keys(p.fields).forEach((canon) => {
+              let v = valueFor(e, sys.id, canon);
+              if (extraOverrides && Object.prototype.hasOwnProperty.call(extraOverrides, canon)) v = extraOverrides[canon];
+              rec[p.fields[canon]] = v === undefined ? null : v;
+            });
+            if (rec[p.id] == null) rec[p.id] = generated;
+            if (slot === 'event') rec.eventLabelKey = e.key;
+            if (slot === 'worker' && p.badge) rec._badge = 'BDG-' + String(90000 + e.idx * 11).slice(-5);
+            if (p.extra) Object.assign(rec, p.extra(e, world));
+            if (slot === 'worker' && e.scheduled && sys.id === sysRoles.hr) {
+              rec._scheduled = { field: e.scheduled.field, value: e.scheduled.value, effectiveFrom: e.scheduled.from };
+            }
+            if (slot === 'worker' && sys.id === sysRoles.hr) {
+              rec._groupEffectiveFrom = e.groupEffectiveFrom || e.f.hireDate;
+              rec._statusEffectiveFrom = e.statusEffectiveFrom || e.terminatedAt || e.f.hireDate;
+            }
+            records[sys.id].push(rec);
+            if (!e.nat) e.nat = {};
+            if (!suffix) e.nat[sys.id] = rec[p.id];
+          };
+          make(null, null);
+          (e.extraRecords || []).forEach((x) => { if (x.system === sys.id) make(x.suffix, x.overrides); });
+        });
+      });
+    });
+
+    /* ---------------------------------------------------------- the adapters */
+    const adapters = {};
+    spec.systems.forEach((sys) => {
+      const effectiveDating = sys.id === sysRoles.hr;
+      adapters[sys.id] = {
+        collection: sys.id,
+        effectiveDating,
+        identity: (r) => {
+          const p = sys.provides[r._type];
+          if (!p) return null;
+          const canon = {};
+          Object.keys(p.fields).forEach((c) => { canon[c] = r[p.fields[c]]; });
+          canon._badge = r._badge;
+          const allKeys = KEY_BUILDERS[r._type](canon, r) || {};
+          const keys = {};
+          (p.keys || Object.keys(allKeys)).forEach((k) => { if (allKeys[k] != null) keys[k] = allKeys[k]; });
+          const nameField = { worker: 'fullName', client: 'fullName', group: 'groupName', site: 'siteName', event: 'eventLabel' }[r._type];
+          return {
+            nativeId: r[p.id],
+            name: canon[nameField],
+            detail: p.detail ? p.detail(canon, r) : null,
+            active: canon.employmentStatus ? canon.employmentStatus === 'Active' : true,
+            keys,
+          };
+        },
+        assertions: (r) => {
+          const p = sys.provides[r._type];
+          if (!p) return [];
+          const t = r.observedAt;
+          const out = [];
+          Object.keys(p.fields).forEach((canon) => {
+            let effectiveFrom = t;
+            if (effectiveDating && r._type === 'worker') {
+              if (canon === 'homeGroup') effectiveFrom = r._groupEffectiveFrom || t;
+              else if (canon === 'employmentStatus') effectiveFrom = r._statusEffectiveFrom || t;
+            }
+            out.push({ field: canon, value: r[p.fields[canon]], observedAt: t, effectiveFrom });
+          });
+          if (r._scheduled) out.push({ field: r._scheduled.field, value: r._scheduled.value, observedAt: t, effectiveFrom: r._scheduled.effectiveFrom, scheduled: true });
+          return out;
+        },
+      };
+    });
+
+    /* ------------------------------------------------------------- the edges */
+    const master = sysRoles.master;
+    const hr = sysRoles.hr || master;
+    const edges = [];
+    const workerRef = (e) => ({ type: 'worker', sys: (e.present[hr] === false ? sysRoles.primary : hr), id: e.nat && e.nat[e.present[hr] === false ? sysRoles.primary : hr] });
+    const groupRef = (code) => {
+      const g = entities.group.find((x) => x.key === code);
+      return g && g.nat ? { type: 'group', sys: master, id: g.nat[master] } : null;
+    };
+    const siteRef = (code) => {
+      const s = entities.site.find((x) => x.key === code);
+      return s && s.nat ? { type: 'site', sys: master, id: s.nat[master] } : null;
+    };
+    const byKey = {};
+    ['worker', 'client', 'event'].forEach((slot) => entities[slot].forEach((e) => { byKey[slot + ':' + e.key] = e; }));
+    const resolvable = (e) => !!e && !e.orphanIn && e.present[hr] !== false && !!e.nat && !!e.nat[hr];
+
+    entities.group.forEach((g) => {
+      const gr = groupRef(g.key), sr = siteRef(g.site);
+      if (gr && sr) edges.push({ type: 'part_of', from: gr, to: sr, systemId: master });
+    });
+
+    entities.worker.forEach((e) => {
+      if (!resolvable(e)) return;
+      const wr = workerRef(e);
+      if (!wr.id) return;
+      if (e.managerKey) {
+        const m = byKey['worker:' + e.managerKey];
+        if (resolvable(m)) edges.push({ type: 'reports_to', from: wr, to: workerRef(m), fromTs: e.f.hireDate, toTs: e.terminatedAt || null, systemId: hr });
+      }
+      if (e.group) {
+        const gr = groupRef(e.group);
+        if (gr) {
+          if (e.priorGroup) {
+            const pg = groupRef(e.priorGroup);
+            if (pg) edges.push({ type: 'assigned_to', from: wr, to: pg, fromTs: e.f.hireDate, toTs: e.groupEffectiveFrom, systemId: sysRoles.schedule || hr });
+            edges.push({ type: 'assigned_to', from: wr, to: gr, fromTs: e.groupEffectiveFrom, toTs: e.terminatedAt || null, systemId: sysRoles.schedule || hr });
+          } else if (world.h.chance(0.28)) {
+            // A rotation somewhere in their history, so the roster has a past.
+            const prior = groupRef(world.h.pick(entities.group.filter((g) => g.key !== e.group)).key);
+            const switched = e.f.hireDate + Math.floor((asOf - e.f.hireDate) * (0.3 + world.rand() * 0.4));
+            if (prior) edges.push({ type: 'assigned_to', from: wr, to: prior, fromTs: e.f.hireDate, toTs: switched, systemId: sysRoles.schedule || hr });
+            edges.push({ type: 'assigned_to', from: wr, to: gr, fromTs: switched, toTs: e.terminatedAt || null, systemId: sysRoles.schedule || hr });
+          } else {
+            edges.push({ type: 'assigned_to', from: wr, to: gr, fromTs: e.f.hireDate, toTs: e.terminatedAt || null, systemId: sysRoles.schedule || hr });
+          }
+        }
+      }
+    });
+
+    entities.event.forEach((e) => {
+      if (!e.nat) return;
+      const er = { type: 'event', sys: master, id: e.nat[master] };
+      if (!er.id) return;
+      const c = byKey['client:' + e.clientKey];
+      if (c && c.nat && c.nat[master]) edges.push({ type: 'event_client', from: er, to: { type: 'client', sys: master, id: c.nat[master] }, systemId: master });
+      const gr = groupRef(e.groupKey);
+      if (gr) edges.push({ type: 'event_group', from: er, to: gr, systemId: master });
+      e.teamKeys.forEach((k) => {
+        const wk = byKey['worker:' + k];
+        if (!resolvable(wk)) return;
+        edges.push({ type: 'event_team', from: er, to: workerRef(wk),
+          role: k === e.leadKey ? (spec.world.leadRole || 'Lead') : (spec.world.memberRole || 'Support'), systemId: master });
+      });
+    });
+
+    // Primary-relationship history: who looks after this client, and who used to.
+    entities.client.forEach((c, i) => {
+      if (!c.nat || !c.nat[master]) return;
+      const g = entities.group[i % entities.group.length];
+      const roster = entities.worker.filter((x) => x.group === g.key && resolvable(x));
+      if (!roster.length) return;
+      const cur = roster[i % roster.length];
+      const cr = { type: 'client', sys: master, id: c.nat[master] };
+      if (roster.length > 1 && world.h.chance(0.35)) {
+        const prev = roster[(i + 1) % roster.length];
+        const changed = asOf - world.h.between(60, 520) * DAY;
+        edges.push({ type: 'served_by', from: cr, to: workerRef(prev), fromTs: changed - 700 * DAY, toTs: changed, systemId: master });
+        edges.push({ type: 'served_by', from: cr, to: workerRef(cur), fromTs: changed, toTs: null, systemId: master });
+      } else {
+        edges.push({ type: 'served_by', from: cr, to: workerRef(cur), fromTs: asOf - world.h.between(200, 1400) * DAY, toTs: null, systemId: master });
+      }
+    });
+
+    const recordCounts = {};
+    spec.systems.forEach((s) => { recordCounts[s.id] = records[s.id].length * (s.volume || 3); });
+
+    return { records, edges, syncState, recordCounts, notes, asOf, adapters };
+  }
+
+  /* ------------------------------------------------------------- definition */
+
+  function define(spec) {
+    const V = spec.types;
+    const L = spec.labels || {};
+    const label = (slot, key, dflt) => (L[slot + '.' + key] || L[key] || dflt);
+
+    const entityTypes = ['site', 'group', 'worker', 'client', 'event'].filter((s) => V[s]).map((slot) => {
+      const t = V[slot];
+      const base = {
+        site: { titleField: 'siteName', subtitle: ['siteType', 'city'], keyFacts: ['siteCode', 'city', 'siteType', 'capacity'] },
+        group: { titleField: 'groupName', subtitle: ['category', 'siteCode'], keyFacts: ['groupCode', 'category', 'siteCode', 'capacity', 'costCenter'] },
+        worker: { titleField: 'fullName', subtitle: ['jobTitle', 'credential'], keyFacts: ['jobTitle', 'credential', 'homeGroup', 'employmentType', 'employeeId', 'credentialExpiry'] },
+        client: { titleField: 'fullName', subtitle: ['clientRef', 'plan'], keyFacts: ['clientRef', 'plan', 'clientStatus', 'phone', 'email', 'dob'] },
+        event: { titleField: 'eventLabel', subtitle: ['eventType', 'outcome'], dateField: 'startAt', keyFacts: ['eventType', 'startAt', 'endAt', 'outcome', 'quantity', 'eventStatus'] },
+      }[slot];
+      const masters = { site: [spec.systemRoles.master], group: [spec.systemRoles.master], worker: [spec.systemRoles.hr || spec.systemRoles.master],
+        client: [spec.systemRoles.master], event: [spec.systemRoles.master] }[slot];
+      return Object.assign({}, base, {
+        id: slot, label: t.label, plural: t.plural, kind: t.kind, glyph: t.glyph,
+        masterSystems: masters,
+        expectedSystems: t.expected || masters,
+        requireMaster: t.requireMaster !== false,
+      });
+    });
+
+    const carried = {};
+    spec.systems.forEach((s) => Object.keys(s.provides || {}).forEach((slot) => {
+      Object.keys(s.provides[slot].fields).forEach((f) => {
+        const k = slot + '.' + f;
+        (carried[k] || (carried[k] = [])).push(s.id);
+      });
+    }));
+
+    const fields = FIELD_SPECS
+      .filter(([slot, key]) => V[slot] && carried[slot + '.' + key])
+      .map(([slot, key, dflt, group, sensitivity, weight, tolerance]) => ({
+        entity: slot, key, group,
+        label: label(slot, key, dflt),
+        contributors: carried[slot + '.' + key],
+        sensitivity: (spec.sensitivity && spec.sensitivity[slot + '.' + key]) || sensitivity,
+        weight, tolerance,
+        impact: (spec.impact && spec.impact[key]) || null,
+      }));
+
+    const policy = {};
+    fields.forEach((f) => {
+      const declared = spec.policy && spec.policy[f.key];
+      policy[f.key] = (declared || f.contributors).filter((s) => f.contributors.indexOf(s) >= 0);
+      if (!policy[f.key].length) policy[f.key] = f.contributors.slice();
+    });
+
+    const edgeTypes = EDGE_SPECS.filter(([, from, to]) => V[from] && V[to]).map(([id, from, to, temporal, roled]) => ({
+      id, from, to, temporal, roled,
+      label: (spec.edgeLabels && spec.edgeLabels[id] && spec.edgeLabels[id][0]) || id,
+      inverse: (spec.edgeLabels && spec.edgeLabels[id] && spec.edgeLabels[id][1]) || id,
+    }));
+
+    let built = null;
+    const pack = {
+      id: spec.id,
+      label: spec.label,
+      industry: spec.industry,
+      tenantName: spec.tenantName,
+      tagline: spec.tagline,
+      systems: spec.systems.map((s) => ({ id: s.id, name: s.name, category: s.category, deepLink: s.deepLink,
+        syncCadence: s.syncCadence, blurb: s.blurb })),
+      entityTypes,
+      edgeTypes,
+      fields,
+      policy,
+      rationale: spec.rationale || {},
+      roles: spec.roles,
+      hierarchy: spec.hierarchy || [
+        { key: 'system', label: spec.label, entity: null },
+        { key: 'siteCode', label: V.site ? V.site.label : 'Site', entity: 'group' },
+        { key: 'category', label: 'Category', entity: 'group' },
+        { key: 'groupName', label: V.group ? V.group.label : 'Group', entity: 'group' },
+      ],
+      codeRefs: { homeGroup: ['group', 'groupCode'], siteCode: ['site', 'siteCode'] },
+      searchTypes: entityTypes.map((t) => t.id),
+      personaRules: spec.personaRules || {},
+      build() {
+        if (!built) built = build(spec);
+        return built;
+      },
+      get adapters() {
+        if (!built) built = build(spec);
+        return built.adapters;
+      },
+    };
+
+    SOT.stats.register(spec.id, statsFor(spec));
+    SOT.packs = SOT.packs || {};
+    SOT.packs[spec.id] = pack;
+    return pack;
+  }
+
+  SOT.kit = { define, FIELD_SPECS, EDGE_SPECS };
 })(window.SOT || (window.SOT = {}));
 </script>
 <script>
@@ -2416,6 +3250,7 @@ input.in::placeholder { color: var(--ink-3); }
   SOT.packs.health = {
     id: 'health',
     label: 'Health system',
+    industry: 'Healthcare',
     tenantName: 'St. Aldwyn Health',
     tagline: 'Three hospitals, six systems, one record of who is who.',
     systems: SYSTEMS,
@@ -2429,6 +3264,13 @@ input.in::placeholder { color: var(--ink-3); }
     adapters: ADAPTERS,
     build,
     searchTypes: ['staff', 'patient', 'unit', 'facility', 'encounter'],
+    personaRules: {
+      physician: /Hospitalist|Attending Physician/,
+      nurse_manager: /Nurse Manager/,
+      exec: /Chief Operating Officer/,
+      workforce: /Workforce Systems/,
+      compliance: /Identity Governance/,
+    },
     // A code in one record is a pointer to another entity. Declaring it here
     // turns "IMG" into a link to Imaging & Radiology everywhere it appears.
     codeRefs: { homeUnit: ['unit', 'unitCode'], facilityCode: ['facility', 'facilityCode'] },
@@ -2955,6 +3797,7 @@ input.in::placeholder { color: var(--ink-3); }
   SOT.packs.defense = {
     id: 'defense',
     label: 'Defence command',
+    industry: 'Public sector & defence',
     tenantName: 'Joint Task Force Meridian',
     tagline: 'One battalion, five systems, one answer about who is ready.',
     systems: SYSTEMS,
@@ -2968,8 +3811,804 @@ input.in::placeholder { color: var(--ink-3); }
     adapters: ADAPTERS,
     build,
     searchTypes: ['member', 'unit', 'installation', 'event'],
+    // Personnel are described by rank rather than a job title.
+    personaRules: {
+      commander: { field: 'rank', match: '^LTC$' },
+      company: { field: 'rank', match: '^CPT$' },
+      s1: { field: 'rank', match: '^LTC$' },
+      security: { field: 'rank', match: '^LTC$' },
+    },
     codeRefs: { unitCode: ['unit', 'uic'], installationCode: ['installation', 'installationCode'] },
   };
+})(window.SOT || (window.SOT = {}));
+</script>
+<script>
+/* --- core/packs/verticals.js --- */
+/* SOT — four more industries, each declared rather than built.
+ *
+ * Every pack below is a configuration file. None of them adds a line to the
+ * engine: identity resolution, conflict classification, the graph, statistics
+ * and the entire interface are the same code serving the hospital.
+ *
+ * Read one of them to see exactly what onboarding a new industry costs — the
+ * vocabulary, the systems, which system carries which field, how much data to
+ * generate, and which of the standard failure modes to inject.
+ *
+ * All data is synthetic. Every organization, person and identifier is invented.
+ */
+(function (SOT) {
+  'use strict';
+
+  const ROLE = (id, name, persona, maxSensitivity, scopes, blurb, landing) =>
+    ({ id, name, persona, maxSensitivity, scopes, blurb, landing: landing || '#/dashboard' });
+
+  /* ═══════════════════════════════════════════ 1 · PERSONAL SERVICES ═══════ */
+
+  SOT.kit.define({
+    id: 'salon',
+    label: 'Salon & spa group',
+    industry: 'Personal services',
+    tenantName: 'Vestry & Bloom',
+    tagline: 'Four locations, five systems, one answer about who cut whose hair.',
+    domain: 'vestrybloom.example',
+    seed: 5150,
+    quantityHint: 'Ticket value',
+    quantityFmt: 'money',
+    statLabels: {
+      workerEvents: 'Appointments', workerClients: 'Guests served', workerBook: 'Regular guests',
+      workerGroups: 'Locations worked', workerAvg: 'Average ticket',
+      clientEvents: 'Visits', clientLast: 'Last visit', clientTotal: 'Lifetime spend', clientPeople: 'Stylists seen',
+      groupEvents: 'Appointments', groupStaff: 'On the floor', groupEver: 'Ever worked here',
+      groupAvg: 'Average ticket', groupPerCap: 'Appointments per chair',
+      siteGroups: 'Departments', siteStaff: 'Team members', siteEvents: 'Appointments',
+      eventQty: 'Ticket', eventTeam: 'Team members',
+    },
+    types: {
+      site: { label: 'Location', plural: 'Locations', kind: 'place', glyph: '▣' },
+      group: { label: 'Department', plural: 'Departments', kind: 'group', glyph: '▤' },
+      worker: { label: 'Team member', plural: 'Team', kind: 'person', glyph: '◍' },
+      client: { label: 'Guest', plural: 'Guests', kind: 'person', glyph: '◎' },
+      event: { label: 'Appointment', plural: 'Appointments', kind: 'event', glyph: '◷' },
+    },
+    labels: {
+      'worker.credential': 'Licence', 'worker.credentialId': 'Licence number',
+      'worker.credentialExpiry': 'Licence expires', 'worker.credentialStatus': 'Licence status',
+      'worker.homeGroup': 'Home department', 'client.clientRef': 'Guest ID', 'client.plan': 'Membership',
+      'event.quantity': 'Ticket value', 'event.outcome': 'Result', 'event.channel': 'Booked via',
+      'group.capacity': 'Chairs', 'site.capacity': 'Chairs',
+    },
+    edgeLabels: {
+      reports_to: ['Reports to', 'Direct reports'],
+      assigned_to: ['Department', 'Team roster'],
+      part_of: ['Location', 'Departments'],
+      served_by: ['Regular stylist', 'Regular guests'],
+      event_client: ['Guest', 'Visit history'],
+      event_group: ['Department', 'Appointments'],
+      event_team: ['Served by', 'Appointments worked'],
+    },
+    systems: [
+      { id: 'booking', name: 'Zenora Booking', category: 'Booking & POS', idPrefix: 'ZB',
+        deepLink: 'https://zenora.example/records/{id}', syncCadence: 'Every 10 minutes', volume: 9,
+        blurb: 'Appointments, tickets, guest profiles, service menu.', sync: { agoMs: 7 * 60000 },
+        provides: {
+          site: { id: 'locationId', keys: ['code'], fields: { siteName: 'name', siteCode: 'code', city: 'city', siteType: 'kind', capacity: 'chairs' } },
+          group: { id: 'deptId', keys: ['code'], fields: { groupName: 'name', groupCode: 'code', siteCode: 'locationCode', category: 'category', capacity: 'chairs' } },
+          worker: { id: 'providerId', keys: ['employeeId', 'email', 'name'],
+            fields: { fullName: 'displayName', workEmail: 'loginEmail', employeeId: 'staffNumber', jobTitle: 'role', credential: 'licenceType', homeGroup: 'deptCode', employmentStatus: 'status', accessStatus: 'accountStatus' } },
+          client: { id: 'guestId', keys: ['mrn', 'nameDob', 'name'],
+            fields: { fullName: 'guestName', clientRef: 'guestCode', dob: 'birthDate', phone: 'mobile', email: 'email', clientStatus: 'status' } },
+          event: { id: 'ticketId', keys: ['code'],
+            fields: { eventLabel: 'label', eventType: 'service', startAt: 'startsAt', endAt: 'endsAt', outcome: 'result', quantity: 'ticketTotal', eventStatus: 'state' } },
+        } },
+      { id: 'payroll', name: 'Paycove', category: 'HR & payroll', idPrefix: 'PC',
+        deepLink: 'https://paycove.example/people/{id}', syncCadence: 'Nightly, 01:00', volume: 4,
+        blurb: 'Employment records, start dates, employment type, terminations.', sync: { agoMs: 12 * 3600000 },
+        provides: {
+          worker: { id: 'employeeNumber', keys: ['employeeId', 'email', 'name'],
+            fields: { fullName: 'legalName', workEmail: 'workEmail', employeeId: 'employeeNumber', jobTitle: 'position', homeGroup: 'department', employmentStatus: 'employmentStatus', employmentType: 'workerType', hireDate: 'startDate' } },
+        } },
+      { id: 'shifts', name: 'ShiftMate', category: 'Scheduling', idPrefix: 'SM',
+        deepLink: 'https://shiftmate.example/staff/{id}', syncCadence: 'Hourly', volume: 22,
+        blurb: 'Rotas, floor assignments, hours worked.',
+        sync: { agoDays: 5, status: 'degraded', message: 'API key rotated on 5 Feb and never updated. No successful poll in five days.' },
+        provides: {
+          worker: { id: 'rotaId', keys: ['employeeId', 'name'], badge: true,
+            fields: { fullName: 'name', employeeId: 'staffNo', homeGroup: 'homeDept', jobTitle: 'shiftRole', employmentStatus: 'rotaStatus' } },
+          group: { id: 'rotaDeptId', keys: ['code'], fields: { groupName: 'label', groupCode: 'code', costCenter: 'costCode' } },
+        } },
+      { id: 'licensing', name: 'State Board Registry', category: 'Licensing', idPrefix: 'SB',
+        deepLink: 'https://board.example/licence/{id}', syncCadence: 'Weekly, Monday', volume: 2,
+        blurb: 'Cosmetology and massage licences, status and expiry.', sync: { agoDays: 4 },
+        provides: {
+          worker: { id: 'licenceRecord', keys: ['employeeId', 'name'], only: (e) => !!e.f.credential,
+            fields: { fullName: 'licenseeName', employeeId: 'employerRef', credential: 'licenceClass', credentialId: 'licenceNo', credentialExpiry: 'expiresOn', credentialStatus: 'standing' } },
+        } },
+      { id: 'loyalty', name: 'Bloom Rewards', category: 'CRM & loyalty', idPrefix: 'BR',
+        deepLink: 'https://rewards.example/member/{id}', syncCadence: 'Every 4 hours', volume: 6,
+        blurb: 'Membership tiers, contact preferences, spend history.', sync: { agoMs: 5 * 3600000 },
+        provides: {
+          client: { id: 'memberId', keys: ['mrn', 'nameDob', 'name'],
+            fields: { fullName: 'memberName', clientRef: 'guestCode', dob: 'dateOfBirth', phone: 'phone', email: 'contactEmail', address: 'postalAddress', plan: 'tier' } },
+          event: { id: 'earnId', keys: ['code'], fields: { quantity: 'spend', channel: 'source' } },
+        } },
+    ],
+    systemRoles: { master: 'booking', hr: 'payroll', schedule: 'shifts', credential: 'licensing', billing: 'loyalty', primary: 'booking', access: 'booking' },
+    policy: {
+      fullName: ['payroll', 'booking', 'shifts', 'licensing'],
+      employeeId: ['payroll', 'booking', 'shifts'],
+      jobTitle: ['payroll', 'booking', 'shifts'],
+      homeGroup: ['shifts', 'booking', 'payroll'],
+      employmentStatus: ['payroll', 'booking'],
+      credential: ['licensing', 'booking'],
+      credentialExpiry: ['licensing'],
+      clientRef: ['booking', 'loyalty'],
+      dob: ['booking', 'loyalty'],
+      phone: ['booking', 'loyalty'],
+      quantity: ['booking', 'loyalty'],
+    },
+    rationale: {
+      homeGroup: 'The rota decides where somebody actually works this week. Payroll holds the position’s department, which changes far more slowly.',
+      credentialExpiry: 'The state board is the only authority on a licence. Anything else is a copy somebody typed in.',
+      quantity: 'The till is the record of what was charged. Loyalty accrues from a feed and drifts when a ticket is voided and re-rung.',
+    },
+    impact: {
+      credentialExpiry: 'An expired licence means the service was performed illegally. Insurance and the state board both care.',
+      employmentStatus: 'A leaver who still has till and booking access can take payments and refund them to themselves.',
+      quantity: 'Commission, loyalty accrual and daily takings all read the ticket. Two numbers means one of them pays the wrong person.',
+    },
+    roles: [
+      ROLE('owner_gm', 'Group manager', 'Operations Director', 'confidential',
+        { site: 'all', group: 'all', worker: 'all', client: 'all', event: 'all' },
+        'Every location: takings, rosters, licences and the records that disagree.'),
+      ROLE('salon_mgr', 'Salon manager', 'Manager, Fitzroy Lane', 'protected',
+        { site: 'all', group: 'all', worker: 'group', client: 'group', event: 'group' },
+        'One department: its team, its appointments and its guests.', '#/me'),
+      ROLE('stylist', 'Senior stylist', 'Senior Stylist', 'protected',
+        { site: 'all', group: 'all', worker: 'all', client: 'book', event: 'book' },
+        'Their own column: their guests, their appointments, their numbers.', '#/me'),
+      ROLE('salon_hr', 'People & compliance', 'People Operations Lead', 'confidential',
+        { site: 'all', group: 'all', worker: 'all', client: 'none', event: 'none' },
+        'Licences, employment records and access. Cannot open a guest.', '#/integrity'),
+    ],
+    personaRules: { salon_mgr: /Department Manager/, stylist: /Senior Stylist/, owner_gm: /Operations Director/, salon_hr: /People Operations/ },
+    world: {
+      leadership: ['Operations Director', 'People Operations Lead', 'Regional Manager'],
+      leadCredential: null,
+      groupLeadTitle: 'Department Manager',
+      contractorTitle: 'Chair renter',
+      staleTitle: 'Stylist',
+      scheduledStatus: 'Sabbatical',
+      leadRole: 'Primary stylist', memberRole: 'Assisting',
+      credentials: ['Cosmetology', 'Barbering', 'Massage therapy', 'Aesthetics', 'Nail technology'],
+      orphanNames: ['Front Desk Terminal', 'Training Login'],
+      sites: [
+        { code: 'FTZ', name: 'Fitzroy Lane', city: 'Portland, OR', type: 'Flagship salon', capacity: 24 },
+        { code: 'ELM', name: 'Elmwood Square', city: 'Portland, OR', type: 'Salon', capacity: 14 },
+        { code: 'HRB', name: 'Harbour Row', city: 'Seattle, WA', type: 'Salon & spa', capacity: 20 },
+        { code: 'CDR', name: 'Cedar Mill', city: 'Beaverton, OR', type: 'Express bar', capacity: 8 },
+      ],
+      groups: [
+        { code: 'FTZ-CUT', name: 'Fitzroy — Cutting', site: 'FTZ', category: 'Hair', capacity: 10,
+          roster: [{ title: 'Senior Stylist', count: 3 }, { title: 'Stylist', count: 4 }, { title: 'Apprentice', count: 2, credential: null }] },
+        { code: 'FTZ-COL', name: 'Fitzroy — Colour', site: 'FTZ', category: 'Colour', capacity: 8,
+          roster: [{ title: 'Colour Specialist', count: 4 }, { title: 'Stylist', count: 2 }] },
+        { code: 'FTZ-SPA', name: 'Fitzroy — Treatment rooms', site: 'FTZ', category: 'Spa', capacity: 6,
+          roster: [{ title: 'Massage Therapist', count: 3 }, { title: 'Aesthetician', count: 2 }] },
+        { code: 'ELM-CUT', name: 'Elmwood — Cutting', site: 'ELM', category: 'Hair', capacity: 8,
+          roster: [{ title: 'Senior Stylist', count: 2 }, { title: 'Stylist', count: 4 }] },
+        { code: 'ELM-COL', name: 'Elmwood — Colour', site: 'ELM', category: 'Colour', capacity: 6,
+          roster: [{ title: 'Colour Specialist', count: 3 }] },
+        { code: 'HRB-CUT', name: 'Harbour — Cutting', site: 'HRB', category: 'Hair', capacity: 10,
+          roster: [{ title: 'Senior Stylist', count: 2 }, { title: 'Stylist', count: 5 }] },
+        { code: 'HRB-SPA', name: 'Harbour — Spa', site: 'HRB', category: 'Spa', capacity: 8,
+          roster: [{ title: 'Massage Therapist', count: 4 }, { title: 'Aesthetician', count: 3 }] },
+        { code: 'HRB-BRB', name: 'Harbour — Barbering', site: 'HRB', category: 'Barbering', capacity: 6,
+          roster: [{ title: 'Barber', count: 4 }] },
+        { code: 'CDR-EXP', name: 'Cedar Mill — Express', site: 'CDR', category: 'Hair', capacity: 8,
+          roster: [{ title: 'Stylist', count: 5 }, { title: 'Apprentice', count: 1, credential: null }] },
+        { code: 'FTZ-FRT', name: 'Fitzroy — Front of house', site: 'FTZ', category: 'Guest services', capacity: 4,
+          roster: [{ title: 'Guest Services', count: 3, credential: null }] },
+      ],
+      defaultRoster: [{ title: 'Stylist', count: 4 }],
+      clients: { count: 260, refPrefix: 'G-', plans: ['Bloom Gold', 'Bloom Silver', 'Pay as you go', 'Pay as you go', 'Corporate'] },
+      events: {
+        perClient: [1, 9], windowDays: 640,
+        types: [
+          { name: 'Cut & finish', hours: [1, 2], quantity: [55, 120] },
+          { name: 'Colour & tone', hours: [2, 4], quantity: [110, 340] },
+          { name: 'Balayage', hours: [3, 5], quantity: [180, 420] },
+          { name: 'Massage — 60 min', hours: [1, 2], quantity: [90, 150] },
+          { name: 'Facial', hours: [1, 2], quantity: [95, 220] },
+          { name: 'Beard trim', hours: [1, 1], quantity: [25, 55] },
+          { name: 'Blow-dry', hours: [1, 1], quantity: [35, 75] },
+        ],
+        outcomes: ['Completed', 'Completed', 'Completed', 'Completed', 'Rebooked', 'No-show', 'Redo — no charge'],
+        statuses: ['Paid', 'Paid', 'Paid', 'Paid', 'Refunded', 'Comped'],
+      },
+    },
+    anomalies: {
+      ghostAccess: 2, badgeLag: 2, credentialLapsed: 4, groupTransfer: 5, credentialDrift: 3,
+      idGap: 4, titleDrift: 4, scheduledChange: 2, contractors: 3, duplicateWorker: 1,
+      duplicateClient: 1, clientMismatch: 5, quantityMismatch: 8, orphanAccounts: 2, costCentre: 1,
+    },
+  });
+
+  /* ═══════════════════════════════════════════════ 2 · HIGHER EDUCATION ═══ */
+
+  SOT.kit.define({
+    id: 'edu',
+    label: 'University',
+    industry: 'Higher education',
+    tenantName: 'Thornfield University',
+    tagline: 'Three campuses, five systems, one answer about who is enrolled in what.',
+    domain: 'thornfield.example',
+    seed: 8801,
+    quantityHint: 'Credit hours',
+    quantityFmt: 'int',
+    statLabels: {
+      workerEvents: 'Sections taught', workerClients: 'Students taught', workerBook: 'Advisees',
+      workerGroups: 'Departments worked', workerAvg: 'Average credit load',
+      clientEvents: 'Enrolments', clientLast: 'Last enrolment', clientTotal: 'Credit hours earned', clientPeople: 'Instructors',
+      groupEvents: 'Enrolments', groupStaff: 'Faculty & staff', groupEver: 'Ever taught here',
+      groupAvg: 'Average credits', groupPerCap: 'Enrolments per seat',
+      siteGroups: 'Departments', siteStaff: 'Faculty & staff', siteEvents: 'Enrolments',
+      eventQty: 'Credit hours', eventTeam: 'Instructors',
+    },
+    types: {
+      site: { label: 'Campus', plural: 'Campuses', kind: 'place', glyph: '▣' },
+      group: { label: 'Department', plural: 'Departments', kind: 'group', glyph: '▤' },
+      worker: { label: 'Faculty & staff', plural: 'Faculty & staff', kind: 'person', glyph: '◍' },
+      client: { label: 'Student', plural: 'Students', kind: 'person', glyph: '◎' },
+      event: { label: 'Enrolment', plural: 'Enrolments', kind: 'event', glyph: '◷' },
+    },
+    labels: {
+      'worker.credential': 'Highest qualification', 'worker.credentialId': 'Faculty ID',
+      'worker.credentialExpiry': 'Appointment ends', 'worker.credentialStatus': 'Appointment status',
+      'worker.homeGroup': 'Home department', 'client.clientRef': 'Student number', 'client.plan': 'Programme',
+      'event.eventType': 'Course', 'event.quantity': 'Credit hours', 'event.outcome': 'Grade',
+      'event.channel': 'Programme', 'group.capacity': 'Seats', 'site.capacity': 'Seats',
+    },
+    edgeLabels: {
+      reports_to: ['Reports to', 'Direct reports'],
+      assigned_to: ['Department', 'Departmental roster'],
+      part_of: ['Campus', 'Departments'],
+      served_by: ['Academic adviser', 'Advisees'],
+      event_client: ['Student', 'Enrolment history'],
+      event_group: ['Department', 'Enrolments'],
+      event_team: ['Taught by', 'Sections taught'],
+    },
+    systems: [
+      { id: 'sis', name: 'Meridian SIS', category: 'Student records', idPrefix: 'SIS',
+        deepLink: 'https://sis.thornfield.example/record/{id}', syncCadence: 'Every 30 minutes', volume: 11,
+        blurb: 'Students, enrolments, course sections, departments, campuses.', sync: { agoMs: 25 * 60000 },
+        provides: {
+          site: { id: 'campusId', keys: ['code'], fields: { siteName: 'name', siteCode: 'code', city: 'city', siteType: 'kind', capacity: 'seats' } },
+          group: { id: 'deptId', keys: ['code'], fields: { groupName: 'name', groupCode: 'code', siteCode: 'campusCode', category: 'faculty', capacity: 'seats' } },
+          worker: { id: 'instructorId', keys: ['employeeId', 'email', 'name'],
+            fields: { fullName: 'name', workEmail: 'email', employeeId: 'facultyNumber', jobTitle: 'rank', homeGroup: 'deptCode', employmentStatus: 'status' } },
+          client: { id: 'studentId', keys: ['mrn', 'nameDob', 'name'],
+            fields: { fullName: 'legalName', clientRef: 'studentNumber', dob: 'dateOfBirth', phone: 'phone', email: 'email', address: 'mailingAddress', plan: 'programme', clientStatus: 'enrolmentStatus' } },
+          event: { id: 'sectionEnrolId', keys: ['code'],
+            fields: { eventLabel: 'label', eventType: 'courseCode', startAt: 'termStart', endAt: 'termEnd', outcome: 'grade', quantity: 'creditHours', eventStatus: 'registrationStatus' } },
+        } },
+      { id: 'hcm', name: 'Thornfield HCM', category: 'HR of record', idPrefix: 'HCM',
+        deepLink: 'https://hcm.thornfield.example/worker/{id}', syncCadence: 'Nightly, 02:00', volume: 4,
+        blurb: 'Appointments, tenure track, employment status, departments.', sync: { agoMs: 10 * 3600000 },
+        provides: {
+          worker: { id: 'workerId', keys: ['employeeId', 'email', 'name'],
+            fields: { fullName: 'legalName', workEmail: 'universityEmail', employeeId: 'workerId', jobTitle: 'appointmentTitle', credential: 'highestDegree', homeGroup: 'homeDept', employmentStatus: 'appointmentStatus', employmentType: 'appointmentType', hireDate: 'appointmentStart' } },
+        } },
+      { id: 'lms', name: 'Lantern LMS', category: 'Teaching', idPrefix: 'LMS',
+        deepLink: 'https://lantern.thornfield.example/user/{id}', syncCadence: 'Hourly', volume: 30,
+        blurb: 'Course shells, teaching assignments, submissions.', sync: { agoMs: 55 * 60000 },
+        provides: {
+          worker: { id: 'lmsUserId', keys: ['email', 'name'],
+            fields: { fullName: 'displayName', workEmail: 'loginEmail', jobTitle: 'courseRole', homeGroup: 'primaryDept', accessStatus: 'accountState' } },
+          event: { id: 'shellId', keys: ['code'], fields: { eventType: 'courseCode', quantity: 'credits' } },
+        } },
+      { id: 'idcard', name: 'Campus Card', category: 'Physical access', idPrefix: 'IDC',
+        deepLink: 'https://card.thornfield.example/credential/{id}', syncCadence: 'Every 15 minutes', volume: 140,
+        blurb: 'Building access, meal plans, card status, door history.', sync: { agoDays: 9, status: 'degraded', message: 'Reader gateway offline since 1 Feb. No successful poll in nine days.' },
+        provides: {
+          worker: { id: 'cardId', keys: ['employeeId', 'badge', 'name'], badge: true,
+            fields: { fullName: 'holder', employeeId: 'personNumber', employmentStatus: 'holderStatus', accessStatus: 'cardStatus', homeGroup: 'homeBuilding' } },
+          client: { id: 'studentCardId', keys: ['mrn', 'name'],
+            fields: { fullName: 'holder', clientRef: 'studentNumber', clientStatus: 'cardStatus' } },
+        } },
+      { id: 'bursar', name: 'Bursar & Financial Aid', category: 'Finance', idPrefix: 'BUR',
+        deepLink: 'https://bursar.thornfield.example/account/{id}', syncCadence: 'Every 6 hours', volume: 5,
+        blurb: 'Tuition accounts, aid packages, billed credit hours.', sync: { agoMs: 4 * 3600000 },
+        provides: {
+          client: { id: 'accountId', keys: ['mrn', 'nameDob', 'name'],
+            fields: { fullName: 'accountName', clientRef: 'studentNumber', dob: 'dateOfBirth', phone: 'billingPhone', address: 'billingAddress', plan: 'aidPackage' } },
+          event: { id: 'chargeId', keys: ['code'], fields: { quantity: 'billedCredits', channel: 'fundingSource', eventStatus: 'billingStatus' } },
+        } },
+    ],
+    systemRoles: { master: 'sis', hr: 'hcm', schedule: 'lms', credential: 'hcm', billing: 'bursar', primary: 'sis', access: 'idcard' },
+    policy: {
+      fullName: ['hcm', 'sis', 'lms', 'idcard'],
+      employeeId: ['hcm', 'sis', 'idcard'],
+      jobTitle: ['hcm', 'sis', 'lms'],
+      homeGroup: ['hcm', 'sis', 'lms', 'idcard'],
+      employmentStatus: ['hcm', 'sis', 'idcard'],
+      clientRef: ['sis', 'bursar', 'idcard'],
+      dob: ['sis', 'bursar'],
+      plan: ['sis', 'bursar'],
+      quantity: ['sis', 'bursar', 'lms'],
+      clientStatus: ['sis', 'idcard'],
+    },
+    rationale: {
+      quantity: 'The student system records what a student registered for. The bursar bills from a snapshot, and the two separate every time somebody drops a class after the census date.',
+      clientStatus: 'Registration status is a student-records decision. The card system is downstream and should follow it, not lead it.',
+      homeGroup: 'The HR appointment names the home department. Teaching systems record wherever the person happens to be teaching this term.',
+    },
+    impact: {
+      quantity: 'Credit hours drive tuition, financial aid eligibility and full-time status. A mismatch is a bill that is wrong in one direction or the other.',
+      clientStatus: 'A withdrawn student whose card still opens residence halls is both a safety issue and an audit finding.',
+      employmentStatus: 'A departed member of staff with a live course shell can still see student work.',
+    },
+    roles: [
+      ROLE('provost', 'Provost office', 'Vice Provost, Academic Affairs', 'confidential',
+        { site: 'all', group: 'all', worker: 'all', client: 'all', event: 'all' },
+        'The whole university, with student identifying detail redacted.'),
+      ROLE('chair', 'Department chair', 'Chair, Department of History', 'protected',
+        { site: 'all', group: 'all', worker: 'group', client: 'group', event: 'group' },
+        'One department: its faculty, its sections and the students in them.', '#/me'),
+      ROLE('adviser', 'Academic adviser', 'Senior Academic Adviser', 'protected',
+        { site: 'all', group: 'all', worker: 'all', client: 'book', event: 'book' },
+        'Their advisees and the enrolments attached to them.', '#/me'),
+      ROLE('registrar', 'Registrar', 'Associate Registrar', 'protected',
+        { site: 'all', group: 'all', worker: 'all', client: 'all', event: 'all' },
+        'Student records, enrolment and every place the systems disagree.', '#/integrity'),
+      ROLE('edu_hr', 'HR & access', 'Manager, Identity & Access', 'confidential',
+        { site: 'all', group: 'all', worker: 'all', client: 'none', event: 'none' },
+        'Appointments, cards and access. Cannot open a student record.', '#/identity'),
+    ],
+    personaRules: { chair: /Department Chair/, adviser: /Senior Academic Adviser/, provost: /Vice Provost/, registrar: /Registrar/, edu_hr: /Identity & Access/ },
+    world: {
+      leadership: ['Vice Provost', 'Manager, Identity & Access', 'Associate Registrar'],
+      leadCredential: 'PhD',
+      groupLeadTitle: 'Department Chair',
+      contractorTitle: 'Adjunct Instructor',
+      staleTitle: 'Lecturer',
+      scheduledStatus: 'Sabbatical',
+      leadRole: 'Instructor of record', memberRole: 'Teaching assistant',
+      credentials: ['PhD', 'PhD', 'MFA', 'MSc', 'EdD'],
+      orphanNames: ['Departmental Shared Account', 'Course Test Login'],
+      sites: [
+        { code: 'MAIN', name: 'Thornfield Main Campus', city: 'Ithaca, NY', type: 'Residential campus', capacity: 9000 },
+        { code: 'RIV', name: 'Riverside Campus', city: 'Ithaca, NY', type: 'Professional studies', capacity: 2600 },
+        { code: 'ONL', name: 'Thornfield Online', city: 'Remote', type: 'Distance learning', capacity: 4200 },
+      ],
+      groups: [
+        { code: 'HIST', name: 'History', site: 'MAIN', category: 'Arts & Humanities', capacity: 320,
+          roster: [{ title: 'Professor', count: 3 }, { title: 'Associate Professor', count: 3 }, { title: 'Lecturer', count: 4 }] },
+        { code: 'CS', name: 'Computer Science', site: 'MAIN', category: 'Science & Engineering', capacity: 640,
+          roster: [{ title: 'Professor', count: 4 }, { title: 'Associate Professor', count: 4 }, { title: 'Lecturer', count: 5 }] },
+        { code: 'BIO', name: 'Biological Sciences', site: 'MAIN', category: 'Science & Engineering', capacity: 480,
+          roster: [{ title: 'Professor', count: 3 }, { title: 'Associate Professor', count: 4 }, { title: 'Research Fellow', count: 3 }] },
+        { code: 'ECON', name: 'Economics', site: 'MAIN', category: 'Social Sciences', capacity: 420,
+          roster: [{ title: 'Professor', count: 3 }, { title: 'Lecturer', count: 5 }] },
+        { code: 'ART', name: 'Fine Art', site: 'MAIN', category: 'Arts & Humanities', capacity: 180,
+          roster: [{ title: 'Professor', count: 2 }, { title: 'Lecturer', count: 4 }] },
+        { code: 'NURS', name: 'Nursing', site: 'RIV', category: 'Health Professions', capacity: 300,
+          roster: [{ title: 'Professor', count: 2 }, { title: 'Clinical Instructor', count: 6 }] },
+        { code: 'BUS', name: 'Business', site: 'RIV', category: 'Professional', capacity: 520,
+          roster: [{ title: 'Professor', count: 3 }, { title: 'Lecturer', count: 6 }] },
+        { code: 'EDU', name: 'Education', site: 'RIV', category: 'Professional', capacity: 260,
+          roster: [{ title: 'Associate Professor', count: 3 }, { title: 'Lecturer', count: 4 }] },
+        { code: 'DATA', name: 'Data Science (Online)', site: 'ONL', category: 'Science & Engineering', capacity: 700,
+          roster: [{ title: 'Lecturer', count: 6 }, { title: 'Adjunct Instructor', count: 4 }] },
+        { code: 'WRIT', name: 'Writing (Online)', site: 'ONL', category: 'Arts & Humanities', capacity: 400,
+          roster: [{ title: 'Lecturer', count: 5 }] },
+        { code: 'REG', name: 'Registrar & Student Services', site: 'MAIN', category: 'Administration', capacity: 40,
+          roster: [{ title: 'Senior Academic Adviser', count: 4, credential: null }, { title: 'Records Officer', count: 3, credential: null }] },
+      ],
+      defaultRoster: [{ title: 'Lecturer', count: 4 }],
+      clients: { count: 240, refPrefix: 'S-', plans: ['Undergraduate — full time', 'Undergraduate — part time', 'Graduate', 'Certificate', 'Exchange'] },
+      events: {
+        perClient: [2, 8], windowDays: 900,
+        types: [
+          { name: 'HIST 214 — Modern Europe', hours: [1, 3], quantity: [3, 3] },
+          { name: 'CS 340 — Algorithms', hours: [1, 3], quantity: [4, 4] },
+          { name: 'BIO 210 — Genetics', hours: [2, 4], quantity: [4, 4] },
+          { name: 'ECON 101 — Microeconomics', hours: [1, 2], quantity: [3, 3] },
+          { name: 'NURS 320 — Clinical Practice', hours: [4, 8], quantity: [6, 6] },
+          { name: 'BUS 260 — Operations', hours: [1, 3], quantity: [3, 3] },
+          { name: 'DATA 500 — Statistical Learning', hours: [2, 4], quantity: [4, 4] },
+          { name: 'WRIT 110 — Composition', hours: [1, 2], quantity: [3, 3] },
+        ],
+        outcomes: ['A', 'A−', 'B+', 'B', 'B−', 'C+', 'C', 'Withdrawn', 'Incomplete'],
+        statuses: ['Registered', 'Registered', 'Registered', 'Dropped', 'Audit'],
+      },
+    },
+    anomalies: {
+      ghostAccess: 3, badgeLag: 3, credentialLapsed: 0, groupTransfer: 6, credentialDrift: 3,
+      idGap: 5, titleDrift: 5, scheduledChange: 3, contractors: 4, duplicateWorker: 1,
+      duplicateClient: 1, clientMismatch: 6, quantityMismatch: 9, orphanAccounts: 2, costCentre: 1,
+    },
+  });
+
+  /* ═══════════════════════════════════════════════ 3 · FINANCIAL SERVICES ═ */
+
+  SOT.kit.define({
+    id: 'wealth',
+    label: 'Wealth management',
+    industry: 'Financial services',
+    tenantName: 'Halyard Wealth Partners',
+    tagline: 'Three offices, five systems, one answer about who advises whom.',
+    domain: 'halyardwealth.example',
+    seed: 3390,
+    quantityHint: 'Assets reviewed',
+    quantityFmt: 'money',
+    statLabels: {
+      workerEvents: 'Client reviews', workerClients: 'Households served', workerBook: 'Book of business',
+      workerGroups: 'Teams worked', workerAvg: 'Average review size',
+      clientEvents: 'Reviews', clientLast: 'Last review', clientTotal: 'Assets under advice', clientPeople: 'Advisers involved',
+      groupEvents: 'Reviews', groupStaff: 'Advisers & staff', groupEver: 'Ever on this desk',
+      groupAvg: 'Average review size', groupPerCap: 'Reviews per seat',
+      siteGroups: 'Desks', siteStaff: 'People', siteEvents: 'Reviews',
+      eventQty: 'Assets reviewed', eventTeam: 'Advisers present',
+    },
+    types: {
+      site: { label: 'Office', plural: 'Offices', kind: 'place', glyph: '▣' },
+      group: { label: 'Desk', plural: 'Desks', kind: 'group', glyph: '▤' },
+      worker: { label: 'Adviser', plural: 'Advisers & staff', kind: 'person', glyph: '◍' },
+      client: { label: 'Household', plural: 'Households', kind: 'person', glyph: '◎' },
+      event: { label: 'Review', plural: 'Reviews', kind: 'event', glyph: '◷' },
+    },
+    labels: {
+      'worker.credential': 'Registration', 'worker.credentialId': 'CRD number',
+      'worker.credentialExpiry': 'Registration expires', 'worker.credentialStatus': 'Registration status',
+      'worker.homeGroup': 'Desk', 'client.clientRef': 'Household ID', 'client.plan': 'Service tier',
+      'event.eventType': 'Review type', 'event.quantity': 'Assets reviewed', 'event.outcome': 'Outcome',
+      'event.channel': 'Service tier', 'group.capacity': 'Seats', 'site.capacity': 'Seats',
+    },
+    edgeLabels: {
+      reports_to: ['Reports to', 'Direct reports'],
+      assigned_to: ['Desk', 'Desk roster'],
+      part_of: ['Office', 'Desks'],
+      served_by: ['Lead adviser', 'Book of business'],
+      event_client: ['Household', 'Review history'],
+      event_group: ['Desk', 'Reviews'],
+      event_team: ['Attended by', 'Reviews attended'],
+    },
+    systems: [
+      { id: 'crm', name: 'Beacon CRM', category: 'Client management', idPrefix: 'BC',
+        deepLink: 'https://beacon.example/record/{id}', syncCadence: 'Every 15 minutes', volume: 12,
+        blurb: 'Households, relationships, meetings, service tiers.', sync: { agoMs: 11 * 60000 },
+        provides: {
+          site: { id: 'officeId', keys: ['code'], fields: { siteName: 'name', siteCode: 'code', city: 'city', siteType: 'kind', capacity: 'seats' } },
+          group: { id: 'deskId', keys: ['code'], fields: { groupName: 'name', groupCode: 'code', siteCode: 'officeCode', category: 'segment', capacity: 'seats' } },
+          worker: { id: 'userId', keys: ['employeeId', 'email', 'name'],
+            fields: { fullName: 'name', workEmail: 'email', employeeId: 'employeeRef', jobTitle: 'title', homeGroup: 'deskCode', employmentStatus: 'userStatus', accessStatus: 'loginState' } },
+          client: { id: 'householdId', keys: ['mrn', 'nameDob', 'name'],
+            fields: { fullName: 'householdName', clientRef: 'householdRef', dob: 'primaryDob', phone: 'phone', email: 'email', address: 'address', plan: 'serviceTier', clientStatus: 'relationshipStatus' } },
+          event: { id: 'meetingId', keys: ['code'],
+            fields: { eventLabel: 'subject', eventType: 'meetingType', startAt: 'heldAt', endAt: 'endedAt', outcome: 'outcome', quantity: 'assetsDiscussed', eventStatus: 'meetingStatus' } },
+        } },
+      { id: 'hris', name: 'Halyard HRIS', category: 'HR of record', idPrefix: 'HR',
+        deepLink: 'https://hris.halyardwealth.example/worker/{id}', syncCadence: 'Nightly, 03:00', volume: 4,
+        blurb: 'Employment, titles, desks, start and leave dates.', sync: { agoMs: 9 * 3600000 },
+        provides: {
+          worker: { id: 'workerId', keys: ['employeeId', 'email', 'name'],
+            fields: { fullName: 'legalName', workEmail: 'workEmail', employeeId: 'workerId', jobTitle: 'jobTitle', homeGroup: 'businessUnit', employmentStatus: 'employmentStatus', employmentType: 'workerType', hireDate: 'hireDate' } },
+        } },
+      { id: 'custodian', name: 'Northgate Custody', category: 'Custody & billing', idPrefix: 'NC',
+        deepLink: 'https://custody.example/account/{id}', syncCadence: 'Nightly, 23:00', volume: 8,
+        blurb: 'Custodial accounts, balances, billed assets, statements.', sync: { agoMs: 15 * 3600000 },
+        provides: {
+          client: { id: 'custodyId', keys: ['mrn', 'nameDob', 'name'],
+            fields: { fullName: 'registrationName', clientRef: 'householdRef', dob: 'dateOfBirth', address: 'mailingAddress', phone: 'phoneOnFile', plan: 'feeSchedule' } },
+          event: { id: 'billingId', keys: ['code'], fields: { quantity: 'billedAssets', channel: 'feeSchedule', eventStatus: 'billingStatus' } },
+        } },
+      { id: 'compliance', name: 'Registration & Compliance', category: 'Regulatory', idPrefix: 'RC',
+        deepLink: 'https://compliance.example/rep/{id}', syncCadence: 'Weekly, Sunday', volume: 3,
+        blurb: 'Securities registrations, licences, supervisory status.', sync: { agoDays: 6 },
+        provides: {
+          worker: { id: 'repId', keys: ['employeeId', 'name'], only: (e) => !!e.f.credential,
+            fields: { fullName: 'registeredName', employeeId: 'firmRef', credential: 'registrations', credentialId: 'crdNumber', credentialExpiry: 'renewalDue', credentialStatus: 'standing', employmentStatus: 'employmentFlag' } },
+        } },
+      { id: 'portfolio', name: 'Portfolio Engine', category: 'Portfolio management', idPrefix: 'PE',
+        deepLink: 'https://portfolio.example/book/{id}', syncCadence: 'Hourly', volume: 26,
+        blurb: 'Models, rebalancing, adviser books, trade history.', sync: { agoMs: 70 * 60000 },
+        provides: {
+          worker: { id: 'advisorCode', keys: ['employeeId', 'name'],
+            fields: { fullName: 'advisorName', employeeId: 'employeeRef', homeGroup: 'bookCode', jobTitle: 'advisorRole' } },
+          group: { id: 'bookId', keys: ['code'], fields: { groupName: 'bookName', groupCode: 'code', costCenter: 'ledgerCode' } },
+        } },
+    ],
+    systemRoles: { master: 'crm', hr: 'hris', schedule: 'portfolio', credential: 'compliance', billing: 'custodian', primary: 'crm', access: 'crm' },
+    policy: {
+      fullName: ['hris', 'crm', 'compliance', 'portfolio'],
+      employeeId: ['hris', 'crm', 'portfolio'],
+      jobTitle: ['hris', 'crm', 'portfolio'],
+      homeGroup: ['hris', 'crm', 'portfolio'],
+      employmentStatus: ['hris', 'crm'],
+      credential: ['compliance'],
+      credentialExpiry: ['compliance'],
+      clientRef: ['crm', 'custodian'],
+      dob: ['crm', 'custodian'],
+      plan: ['crm', 'custodian'],
+      quantity: ['custodian', 'crm'],
+    },
+    rationale: {
+      quantity: 'The custodian holds the assets and is the only party that can say what they were worth. The CRM records what an adviser said in a meeting.',
+      credentialExpiry: 'Registration status comes from the regulator. A lapsed registration means the person cannot legally give advice.',
+      homeGroup: 'HR names the desk. The portfolio system carries a book code that is reassigned far more often than an employment record changes.',
+    },
+    impact: {
+      quantity: 'Advisory fees are charged on assets. A number that disagrees with the custodian is a billing error and a regulatory one.',
+      credentialExpiry: 'Advice given on a lapsed registration is a reportable event, and every meeting held under it is in scope.',
+      employmentStatus: 'A departed adviser with live CRM access can still see client holdings and contact details.',
+    },
+    roles: [
+      ROLE('managing', 'Managing partner', 'Managing Partner', 'confidential',
+        { site: 'all', group: 'all', worker: 'all', client: 'all', event: 'all' },
+        'The whole firm, with household identifying detail redacted.'),
+      ROLE('desk_head', 'Desk head', 'Head of Private Client Desk', 'protected',
+        { site: 'all', group: 'all', worker: 'group', client: 'group', event: 'group' },
+        'One desk: its advisers, its households and its reviews.', '#/me'),
+      ROLE('advisor', 'Adviser', 'Senior Adviser', 'protected',
+        { site: 'all', group: 'all', worker: 'all', client: 'book', event: 'book' },
+        'Their own book of business and nothing beyond it.', '#/me'),
+      ROLE('compliance_officer', 'Compliance', 'Chief Compliance Officer', 'protected',
+        { site: 'all', group: 'all', worker: 'all', client: 'all', event: 'all' },
+        'Registrations, supervision and every record the systems dispute.', '#/integrity'),
+      ROLE('wealth_ops', 'Operations', 'Head of Operations', 'confidential',
+        { site: 'all', group: 'all', worker: 'all', client: 'none', event: 'none' },
+        'People, desks and access. Cannot open a household.', '#/identity'),
+    ],
+    personaRules: { desk_head: /Desk Head/, advisor: /Senior Adviser/, managing: /Managing Partner/, compliance_officer: /Chief Compliance/, wealth_ops: /Head of Operations/ },
+    world: {
+      leadership: ['Managing Partner', 'Head of Operations', 'Chief Compliance Officer'],
+      leadCredential: 'Series 7, 66',
+      groupLeadTitle: 'Desk Head',
+      contractorTitle: 'Contract Paraplanner',
+      staleTitle: 'Associate Adviser',
+      scheduledStatus: 'Garden leave',
+      leadRole: 'Lead adviser', memberRole: 'Supporting',
+      credentials: ['Series 7, 66', 'Series 7, 63', 'CFP', 'CFA', 'Series 65'],
+      orphanNames: ['Reception Terminal', 'Migration Service Account'],
+      sites: [
+        { code: 'BOS', name: 'Boston Office', city: 'Boston, MA', type: 'Headquarters', capacity: 90 },
+        { code: 'CHI', name: 'Chicago Office', city: 'Chicago, IL', type: 'Regional office', capacity: 46 },
+        { code: 'DEN', name: 'Denver Office', city: 'Denver, CO', type: 'Regional office', capacity: 28 },
+      ],
+      groups: [
+        { code: 'BOS-PC', name: 'Boston — Private Client', site: 'BOS', category: 'Private client', capacity: 26,
+          roster: [{ title: 'Senior Adviser', count: 4 }, { title: 'Adviser', count: 5 }, { title: 'Paraplanner', count: 3, credential: null }] },
+        { code: 'BOS-UHNW', name: 'Boston — Ultra High Net Worth', site: 'BOS', category: 'UHNW', capacity: 14,
+          roster: [{ title: 'Senior Adviser', count: 3 }, { title: 'Wealth Strategist', count: 2 }] },
+        { code: 'BOS-INST', name: 'Boston — Institutional', site: 'BOS', category: 'Institutional', capacity: 16,
+          roster: [{ title: 'Adviser', count: 4 }, { title: 'Analyst', count: 3, credential: null }] },
+        { code: 'BOS-OPS', name: 'Boston — Operations', site: 'BOS', category: 'Operations', capacity: 20,
+          roster: [{ title: 'Operations Associate', count: 5, credential: null }, { title: 'Client Service', count: 4, credential: null }] },
+        { code: 'CHI-PC', name: 'Chicago — Private Client', site: 'CHI', category: 'Private client', capacity: 18,
+          roster: [{ title: 'Senior Adviser', count: 3 }, { title: 'Adviser', count: 4 }] },
+        { code: 'CHI-RET', name: 'Chicago — Retirement Plans', site: 'CHI', category: 'Retirement', capacity: 12,
+          roster: [{ title: 'Adviser', count: 4 }, { title: 'Analyst', count: 2, credential: null }] },
+        { code: 'DEN-PC', name: 'Denver — Private Client', site: 'DEN', category: 'Private client', capacity: 14,
+          roster: [{ title: 'Senior Adviser', count: 2 }, { title: 'Adviser', count: 4 }] },
+        { code: 'DEN-PLAN', name: 'Denver — Financial Planning', site: 'DEN', category: 'Planning', capacity: 10,
+          roster: [{ title: 'Financial Planner', count: 4 }, { title: 'Paraplanner', count: 2, credential: null }] },
+      ],
+      defaultRoster: [{ title: 'Adviser', count: 4 }],
+      clients: { count: 300, refPrefix: 'H-', plans: ['Core', 'Premier', 'Private Office', 'Retirement Plan', 'Institutional'] },
+      events: {
+        perClient: [1, 8], windowDays: 800,
+        types: [
+          { name: 'Annual review', hours: [1, 2], quantity: [180000, 4200000] },
+          { name: 'Portfolio rebalance', hours: [1, 2], quantity: [120000, 2600000] },
+          { name: 'Retirement planning', hours: [1, 3], quantity: [90000, 1800000] },
+          { name: 'Estate planning', hours: [2, 4], quantity: [400000, 9000000] },
+          { name: 'Onboarding', hours: [1, 3], quantity: [50000, 1200000] },
+          { name: 'Tax review', hours: [1, 2], quantity: [70000, 1500000] },
+        ],
+        outcomes: ['No change', 'Rebalanced', 'Plan updated', 'Contribution increased', 'Escalated to specialist', 'Follow-up scheduled'],
+        statuses: ['Billed', 'Billed', 'Billed', 'Pending', 'Disputed'],
+      },
+    },
+    anomalies: {
+      ghostAccess: 3, badgeLag: 2, credentialLapsed: 4, groupTransfer: 6, credentialDrift: 3,
+      idGap: 4, titleDrift: 5, scheduledChange: 2, contractors: 3, duplicateWorker: 1,
+      duplicateClient: 1, clientMismatch: 6, quantityMismatch: 10, orphanAccounts: 2, costCentre: 1,
+    },
+  });
+
+  /* ═══════════════════════════════════════════════════════ 4 · LOGISTICS ═══ */
+
+  SOT.kit.define({
+    id: 'freight',
+    label: 'Freight & logistics',
+    industry: 'Transportation',
+    tenantName: 'Cardinal Freightways',
+    tagline: 'Four terminals, five systems, one answer about who hauled what.',
+    domain: 'cardinalfreight.example',
+    seed: 7712,
+    quantityHint: 'Miles',
+    quantityFmt: 'miles',
+    statLabels: {
+      workerEvents: 'Loads run', workerClients: 'Shippers served', workerBook: 'Dedicated accounts',
+      workerGroups: 'Fleets worked', workerAvg: 'Average load',
+      clientEvents: 'Loads', clientLast: 'Last shipment', clientTotal: 'Total miles', clientPeople: 'Drivers used',
+      groupEvents: 'Loads', groupStaff: 'Drivers assigned', groupEver: 'Ever on this fleet',
+      groupAvg: 'Average load', groupPerCap: 'Loads per tractor',
+      siteGroups: 'Fleets', siteStaff: 'Drivers & staff', siteEvents: 'Loads',
+      eventQty: 'Miles', eventTeam: 'Crew',
+    },
+    types: {
+      site: { label: 'Terminal', plural: 'Terminals', kind: 'place', glyph: '▣' },
+      group: { label: 'Fleet', plural: 'Fleets', kind: 'group', glyph: '▤' },
+      worker: { label: 'Driver', plural: 'Drivers & staff', kind: 'person', glyph: '◍' },
+      client: { label: 'Shipper', plural: 'Shippers', kind: 'person', glyph: '◎' },
+      event: { label: 'Load', plural: 'Loads', kind: 'event', glyph: '◷' },
+    },
+    labels: {
+      'worker.credential': 'Licence class', 'worker.credentialId': 'CDL number',
+      'worker.credentialExpiry': 'Medical certificate expires', 'worker.credentialStatus': 'Qualification status',
+      'worker.homeGroup': 'Fleet', 'client.clientRef': 'Account number', 'client.plan': 'Contract',
+      'client.fullName': 'Shipper', 'client.dob': 'Account opened',
+      'event.eventType': 'Lane', 'event.quantity': 'Miles', 'event.outcome': 'Delivery status',
+      'event.channel': 'Contract', 'group.capacity': 'Tractors', 'site.capacity': 'Dock doors',
+    },
+    edgeLabels: {
+      reports_to: ['Reports to', 'Direct reports'],
+      assigned_to: ['Fleet', 'Fleet roster'],
+      part_of: ['Terminal', 'Fleets'],
+      served_by: ['Dedicated driver', 'Dedicated accounts'],
+      event_client: ['Shipper', 'Shipment history'],
+      event_group: ['Fleet', 'Loads'],
+      event_team: ['Run by', 'Loads run'],
+    },
+    systems: [
+      { id: 'tms', name: 'Cardinal TMS', category: 'Transport management', idPrefix: 'TMS',
+        deepLink: 'https://tms.cardinalfreight.example/record/{id}', syncCadence: 'Every 5 minutes', volume: 14,
+        blurb: 'Loads, lanes, terminals, fleets, shipper accounts.', sync: { agoMs: 4 * 60000 },
+        provides: {
+          site: { id: 'terminalId', keys: ['code'], fields: { siteName: 'name', siteCode: 'code', city: 'city', siteType: 'kind', capacity: 'docks' } },
+          group: { id: 'fleetId', keys: ['code'], fields: { groupName: 'name', groupCode: 'code', siteCode: 'terminalCode', category: 'service', capacity: 'tractors' } },
+          worker: { id: 'driverId', keys: ['employeeId', 'email', 'name'],
+            fields: { fullName: 'driverName', workEmail: 'email', employeeId: 'driverCode', jobTitle: 'position', homeGroup: 'fleetCode', employmentStatus: 'driverStatus', accessStatus: 'portalAccess' } },
+          client: { id: 'accountId', keys: ['mrn', 'name'],
+            fields: { fullName: 'accountName', clientRef: 'accountNumber', phone: 'contactPhone', email: 'contactEmail', address: 'billTo', plan: 'contractType', clientStatus: 'accountStatus' } },
+          event: { id: 'loadId', keys: ['code'],
+            fields: { eventLabel: 'reference', eventType: 'lane', startAt: 'dispatchedAt', endAt: 'deliveredAt', outcome: 'deliveryStatus', quantity: 'dispatchMiles', eventStatus: 'loadStatus' } },
+        } },
+      { id: 'payroll', name: 'Driver Payroll', category: 'HR of record', idPrefix: 'DP',
+        deepLink: 'https://payroll.cardinalfreight.example/worker/{id}', syncCadence: 'Nightly, 02:30', volume: 4,
+        blurb: 'Employment, pay class, terminations, home terminal.', sync: { agoMs: 8 * 3600000 },
+        provides: {
+          worker: { id: 'payrollId', keys: ['employeeId', 'email', 'name'],
+            fields: { fullName: 'legalName', workEmail: 'companyEmail', employeeId: 'employeeNo', jobTitle: 'payClass', homeGroup: 'homeFleet', employmentStatus: 'status', employmentType: 'engagement', hireDate: 'hiredOn' } },
+        } },
+      { id: 'eld', name: 'RoadSense ELD', category: 'Telematics', idPrefix: 'RS',
+        deepLink: 'https://roadsense.example/device/{id}', syncCadence: 'Every 2 minutes', volume: 620,
+        blurb: 'Hours of service, GPS, actual miles driven, vehicle assignment.', sync: { agoMs: 3 * 60000 },
+        provides: {
+          worker: { id: 'eldUserId', keys: ['employeeId', 'name'], badge: true,
+            fields: { fullName: 'operatorName', employeeId: 'operatorRef', homeGroup: 'assignedFleet', accessStatus: 'deviceStatus' } },
+          event: { id: 'tripId', keys: ['code'], fields: { quantity: 'odometerMiles', startAt: 'tripStart', endAt: 'tripEnd' } },
+        } },
+      { id: 'dot', name: 'DOT Qualification File', category: 'Regulatory', idPrefix: 'DOT',
+        deepLink: 'https://dqf.example/driver/{id}', syncCadence: 'Daily, 04:00', volume: 6,
+        blurb: 'Commercial licences, medical certificates, endorsements, qualification status.', sync: { agoDays: 12, status: 'degraded', message: 'Vendor API contract lapsed on 29 Jan. No successful poll in twelve days.' },
+        provides: {
+          worker: { id: 'dqfId', keys: ['employeeId', 'name'], only: (e) => !!e.f.credential,
+            fields: { fullName: 'driverName', employeeId: 'carrierRef', credential: 'licenceClass', credentialId: 'cdlNumber', credentialExpiry: 'medCertExpiry', credentialStatus: 'qualificationStatus', employmentStatus: 'employmentFlag' } },
+        } },
+      { id: 'billing', name: 'Freight Billing', category: 'Revenue', idPrefix: 'FB',
+        deepLink: 'https://billing.cardinalfreight.example/invoice/{id}', syncCadence: 'Every 3 hours', volume: 7,
+        blurb: 'Invoices, billed miles, accessorials, shipper billing details.', sync: { agoMs: 2 * 3600000 },
+        provides: {
+          client: { id: 'billingAccountId', keys: ['mrn', 'name'],
+            fields: { fullName: 'billToName', clientRef: 'accountNumber', phone: 'apPhone', address: 'remitTo', plan: 'rateAgreement' } },
+          event: { id: 'invoiceId', keys: ['code'], fields: { quantity: 'billedMiles', channel: 'rateAgreement', eventStatus: 'invoiceStatus' } },
+        } },
+    ],
+    systemRoles: { master: 'tms', hr: 'payroll', schedule: 'eld', credential: 'dot', billing: 'billing', primary: 'tms', access: 'eld' },
+    policy: {
+      fullName: ['payroll', 'tms', 'dot', 'eld'],
+      employeeId: ['payroll', 'tms', 'eld'],
+      jobTitle: ['payroll', 'tms'],
+      homeGroup: ['tms', 'payroll', 'eld'],
+      employmentStatus: ['payroll', 'tms', 'dot'],
+      credential: ['dot'],
+      credentialExpiry: ['dot'],
+      clientRef: ['tms', 'billing'],
+      plan: ['tms', 'billing'],
+      quantity: ['eld', 'tms', 'billing'],
+      startAt: ['tms', 'eld'],
+    },
+    rationale: {
+      quantity: 'The electronic logging device records what the truck actually did. Dispatch holds a planned figure and billing holds a contracted one — all three are legitimate, and all three are different.',
+      credentialExpiry: 'The qualification file is the regulator-facing record. A driver dispatched on an expired medical certificate is an out-of-service violation.',
+      homeGroup: 'Dispatch owns which fleet a driver is running today. Payroll holds the home terminal, which changes when the job changes, not when the week does.',
+    },
+    impact: {
+      quantity: 'Driver pay, fuel tax filing and customer invoices are all computed from miles. Three numbers means at least two of them are wrong.',
+      credentialExpiry: 'Dispatching an unqualified driver is a violation per load, and every load run under it is discoverable.',
+      employmentStatus: 'A separated driver still marked active can be dispatched, and still has portal access to customer manifests.',
+    },
+    roles: [
+      ROLE('vp_ops', 'VP Operations', 'Vice President, Operations', 'confidential',
+        { site: 'all', group: 'all', worker: 'all', client: 'all', event: 'all' },
+        'Every terminal: fleets, loads, qualification and the records that disagree.'),
+      ROLE('terminal_mgr', 'Terminal manager', 'Terminal Manager, Joliet', 'protected',
+        { site: 'all', group: 'all', worker: 'group', client: 'group', event: 'group' },
+        'One fleet: its drivers, its loads and the shippers on them.', '#/me'),
+      ROLE('dispatcher', 'Dispatcher', 'Senior Dispatcher', 'protected',
+        { site: 'all', group: 'all', worker: 'all', client: 'book', event: 'book' },
+        'Their dedicated accounts and the loads attached to them.', '#/me'),
+      ROLE('safety', 'Safety & compliance', 'Director of Safety', 'protected',
+        { site: 'all', group: 'all', worker: 'all', client: 'all', event: 'all' },
+        'Qualification files, hours of service and every disputed record.', '#/integrity'),
+      ROLE('freight_hr', 'Driver services', 'Manager, Driver Services', 'confidential',
+        { site: 'all', group: 'all', worker: 'all', client: 'none', event: 'none' },
+        'Employment, licensing and access. Cannot open a shipper account.', '#/identity'),
+    ],
+    personaRules: { terminal_mgr: /Fleet Manager/, dispatcher: /Senior Dispatcher/, vp_ops: /Vice President/, safety: /Director of Safety/, freight_hr: /Driver Services/ },
+    world: {
+      leadership: ['Vice President, Operations', 'Manager, Driver Services', 'Director of Safety'],
+      leadCredential: null,
+      groupLeadTitle: 'Fleet Manager',
+      contractorTitle: 'Owner-operator',
+      staleTitle: 'Driver',
+      scheduledStatus: 'Leave of absence',
+      leadRole: 'Driver', memberRole: 'Co-driver',
+      credentials: ['CDL Class A', 'CDL Class A', 'CDL Class A — Hazmat', 'CDL Class B'],
+      orphanNames: ['Yard Kiosk', 'Integration Service Account'],
+      sites: [
+        { code: 'JOL', name: 'Joliet Terminal', city: 'Joliet, IL', type: 'Line-haul hub', capacity: 60 },
+        { code: 'DAL', name: 'Dallas Terminal', city: 'Dallas, TX', type: 'Line-haul hub', capacity: 48 },
+        { code: 'ATL', name: 'Atlanta Terminal', city: 'Atlanta, GA', type: 'Cross-dock', capacity: 34 },
+        { code: 'RNO', name: 'Reno Terminal', city: 'Reno, NV', type: 'Cross-dock', capacity: 22 },
+      ],
+      groups: [
+        { code: 'JOL-LH', name: 'Joliet — Line Haul', site: 'JOL', category: 'Line haul', capacity: 22,
+          roster: [{ title: 'Driver', count: 9 }, { title: 'Senior Dispatcher', count: 2, credential: null }] },
+        { code: 'JOL-REG', name: 'Joliet — Regional', site: 'JOL', category: 'Regional', capacity: 16,
+          roster: [{ title: 'Driver', count: 8 }] },
+        { code: 'JOL-MNT', name: 'Joliet — Maintenance', site: 'JOL', category: 'Maintenance', capacity: 10,
+          roster: [{ title: 'Diesel Technician', count: 5, credential: null }] },
+        { code: 'DAL-LH', name: 'Dallas — Line Haul', site: 'DAL', category: 'Line haul', capacity: 20,
+          roster: [{ title: 'Driver', count: 9 }, { title: 'Senior Dispatcher', count: 1, credential: null }] },
+        { code: 'DAL-HAZ', name: 'Dallas — Hazmat', site: 'DAL', category: 'Specialised', capacity: 10,
+          roster: [{ title: 'Driver', count: 6 }] },
+        { code: 'DAL-DED', name: 'Dallas — Dedicated', site: 'DAL', category: 'Dedicated', capacity: 12,
+          roster: [{ title: 'Driver', count: 7 }] },
+        { code: 'ATL-REG', name: 'Atlanta — Regional', site: 'ATL', category: 'Regional', capacity: 14,
+          roster: [{ title: 'Driver', count: 8 }] },
+        { code: 'ATL-LTL', name: 'Atlanta — LTL City', site: 'ATL', category: 'City delivery', capacity: 12,
+          roster: [{ title: 'Driver', count: 6 }, { title: 'Dock Supervisor', count: 2, credential: null }] },
+        { code: 'RNO-LH', name: 'Reno — Line Haul', site: 'RNO', category: 'Line haul', capacity: 12,
+          roster: [{ title: 'Driver', count: 7 }] },
+        { code: 'JOL-DSP', name: 'Joliet — Dispatch', site: 'JOL', category: 'Dispatch', capacity: 8,
+          roster: [{ title: 'Senior Dispatcher', count: 3, credential: null }, { title: 'Load Planner', count: 3, credential: null }] },
+      ],
+      defaultRoster: [{ title: 'Driver', count: 6 }],
+      clients: { count: 180, refPrefix: 'A-', plans: ['Contract — dedicated', 'Contract — volume', 'Spot market', 'Brokerage', 'Contract — dedicated'] },
+      events: {
+        perClient: [2, 14], windowDays: 520,
+        types: [
+          { name: 'Joliet → Dallas', hours: [14, 22], quantity: [920, 1010] },
+          { name: 'Dallas → Atlanta', hours: [12, 18], quantity: [770, 830] },
+          { name: 'Atlanta → Joliet', hours: [12, 20], quantity: [690, 750] },
+          { name: 'Reno → Dallas', hours: [24, 34], quantity: [1580, 1720] },
+          { name: 'Joliet metro LTL', hours: [4, 9], quantity: [40, 180] },
+          { name: 'Dallas → Reno', hours: [24, 34], quantity: [1560, 1700] },
+          { name: 'Atlanta metro LTL', hours: [4, 9], quantity: [35, 165] },
+        ],
+        outcomes: ['Delivered on time', 'Delivered on time', 'Delivered on time', 'Delivered late', 'Refused at dock', 'Rescheduled'],
+        statuses: ['Invoiced', 'Invoiced', 'Invoiced', 'Held — paperwork', 'Disputed'],
+      },
+    },
+    anomalies: {
+      ghostAccess: 3, badgeLag: 3, credentialLapsed: 5, groupTransfer: 7, credentialDrift: 3,
+      idGap: 5, titleDrift: 4, scheduledChange: 2, contractors: 4, duplicateWorker: 1,
+      duplicateClient: 1, clientMismatch: 5, quantityMismatch: 12, orphanAccounts: 2, costCentre: 1,
+    },
+  });
 })(window.SOT || (window.SOT = {}));
 </script>
 <script>
@@ -3002,6 +4641,7 @@ input.in::placeholder { color: var(--ink-3); }
       window.localStorage.setItem(KEY, JSON.stringify({
         packId: state.packId, roleId: state.roleId, policies: state.policies,
         taskStatus: state.taskStatus, forcedLinks: state.forcedLinks, dismissedKeys: state.dismissedKeys,
+        audit: state.audit.slice(0, 120),
       }));
     } catch (e) { /* storage disabled — the app just forgets between reloads */ }
   }
@@ -3009,9 +4649,28 @@ input.in::placeholder { color: var(--ink-3); }
   /** Values are stored raw; this is the engine-side rendering used in task text. */
   function formatValue(field, value) {
     if (value === null || value === undefined || value === '') return '—';
-    if (/At$|Date$|Expiry$|dob/i.test(field) && typeof value === 'number' && value > 1e11)
+    if (/At$|Date$|Expiry$|dob/i.test(field) && typeof value === 'number' && Math.abs(value) > 1e11)
       return new Date(value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
     return String(value);
+  }
+
+  /* A little history so the log is not empty on first open. Anything the user
+     does in this session is appended to the top of it. */
+  function seedAudit() {
+    const now = Date.now();
+    const H = 3600000;
+    return [
+      { ts: now - 6 * H, actor: 'r.okafor@kalirislabs.example', tenant: 'health', action: 'policy.change',
+        detail: 'Home unit → UKG Dimensions (was Workday)' },
+      { ts: now - 27 * H, actor: 'system', tenant: 'freight', action: 'connector.degraded',
+        detail: 'DOT Qualification File stopped responding' },
+      { ts: now - 31 * H, actor: 'j.mensah@kalirislabs.example', tenant: 'edu', action: 'identity.confirm',
+        detail: 'Campus Card credential linked to a faculty record' },
+      { ts: now - 49 * H, actor: 'r.okafor@kalirislabs.example', tenant: 'wealth', action: 'tenant.provision',
+        detail: 'Halyard Wealth Partners provisioned · 5 connectors' },
+      { ts: now - 73 * H, actor: 'system', tenant: 'salon', action: 'sync.complete',
+        detail: 'Initial load: 3,484 records across 5 connectors' },
+    ];
   }
 
   function create() {
@@ -3025,7 +4684,9 @@ input.in::placeholder { color: var(--ink-3); }
       taskStatus: saved.taskStatus || {},
       forcedLinks: saved.forcedLinks || [],
       dismissedKeys: saved.dismissedKeys || [],
+      audit: saved.audit || seedAudit(),
       signedIn: false,
+      owner: false,
     };
 
     const prepared = {};
@@ -3045,6 +4706,12 @@ input.in::placeholder { color: var(--ink-3); }
 
     const listeners = [];
     let view = null;
+    let platformCache = null;
+
+    function audit(action, detail, tenant) {
+      state.audit.unshift({ ts: Date.now(), actor: 'you', tenant: tenant || state.packId, action, detail });
+      if (state.audit.length > 200) state.audit.length = 200;
+    }
 
     function policyFor(pack) {
       const override = state.policies[pack.id] || {};
@@ -3101,74 +4768,104 @@ input.in::placeholder { color: var(--ink-3); }
       return view;
     }
 
+    /* --------------------------------------------------- structural roles
+     *
+     * The scope rules below have to work whether the pack calls its people
+     * "staff", "personnel" or "drivers". Rather than hard-coding vocabulary,
+     * derive the structural role of each entity type from the edges: the
+     * worker type is whatever is assigned to a group over time, the client
+     * type is whatever an event is about, and so on.
+     */
+    function shape(pack) {
+      if (pack._shape) return pack._shape;
+      const kind = (id) => (pack.typeById[id] || {}).kind;
+      const groupType = (pack.entityTypes.find((t) => t.kind === 'group') || {}).id;
+      const eventType = (pack.entityTypes.find((t) => t.kind === 'event') || {}).id;
+      const assignEdge = pack.edgeTypes.find((e) => e.temporal && e.to === groupType && kind(e.from) === 'person');
+      const workerType = assignEdge ? assignEdge.from : (pack.entityTypes.find((t) => t.kind === 'person') || {}).id;
+      const eventWorkerEdge = pack.edgeTypes.find((e) => e.from === eventType && e.to === workerType);
+      const eventClientEdge = pack.edgeTypes.find((e) => e.from === eventType && kind(e.to) === 'person' && e.to !== workerType);
+      const clientType = eventClientEdge ? eventClientEdge.to : null;
+      const eventGroupEdge = pack.edgeTypes.find((e) => e.from === eventType && e.to === groupType);
+      const clientWorkerEdge = pack.edgeTypes.find((e) => e.from === clientType && e.to === workerType);
+      pack._shape = { groupType, eventType, workerType, clientType, assignEdge, eventWorkerEdge, eventClientEdge, eventGroupEdge, clientWorkerEdge };
+      return pack._shape;
+    }
+
     /* ------------------------------------------------------------ persona */
 
     function pickPersona(pack, resolution, graph, role) {
-      const all = Object.values(resolution.profiles).filter((p) => p.type === 'staff');
-      const byTitle = (re) => all.find((p) => re.test(p.get('jobTitle') || ''));
-      if (role.id === 'physician') {
-        const candidates = all.filter((p) => /Hospitalist|Attending Physician/.test(p.get('jobTitle') || ''));
-        return candidates.sort((a, b) =>
-          graph.neighbours(b.entity.id, 'care_team', { dir: 'in' }).length -
-          graph.neighbours(a.entity.id, 'care_team', { dir: 'in' }).length)[0] || null;
+      const sh = shape(pack);
+      if (!sh.workerType) return null;
+      const all = Object.values(resolution.profiles).filter((p) => p.type === sh.workerType);
+      const rule = (pack.personaRules || {})[role.id];
+      if (rule) {
+        const field = rule.field || 'jobTitle';
+        const re = rule.match ? new RegExp(rule.match) : (rule instanceof RegExp ? rule : new RegExp(rule));
+        const matches = all.filter((p) => re.test(p.get(field) || ''));
+        if (matches.length) {
+          // Prefer whoever has the most attached to them — the busiest example
+          // makes for the most useful demonstration of the role.
+          return matches.sort((a, b) =>
+            graph.edgesOf(b.entity.id).length - graph.edgesOf(a.entity.id).length)[0];
+        }
       }
-      if (role.id === 'nurse_manager') {
-        const mgrs = all.filter((p) => /Nurse Manager/.test(p.get('jobTitle') || ''));
-        return mgrs.find((p) => p.get('homeUnit') === '4W') || mgrs[0] || null;
-      }
-      if (role.id === 'exec') return byTitle(/Chief Operating Officer/) || null;
-      if (role.id === 'workforce') return byTitle(/Workforce Systems/) || null;
-      if (role.id === 'compliance') return byTitle(/Identity Governance/) || null;
       return null;
     }
 
     /* -------------------------------------------------------------- scope
      *
-     * Which entities this role may open at all. Kept as explicit id sets so
-     * the interface can never accidentally leak a patient into a count, a
-     * search result or a related-items list.
+     * Which entities this role may open at all, as explicit id sets so the
+     * interface can never leak a record into a count, a search result or a
+     * related-items list.
+     *
+     *   all    everything of that type
+     *   none   nothing — the records are not in scope at all
+     *   group  whatever hangs off the persona's current group
+     *   book   whatever the persona personally handles
      */
     function computeScope(pack, resolution, graph, role, persona) {
+      const sh = shape(pack);
+      // Packs may phrase the same two rules in their own words.
+      const norm = (r) => (r === 'unit' ? 'group' : r === 'care' ? 'book' : r || 'all');
+      const scopes = {};
+      Object.keys(role.scopes || {}).forEach((k) => { scopes[k] = norm(role.scopes[k]); });
+
       const allowed = {};
-      const all = (type) => Object.values(resolution.profiles).filter((p) => p.type === type).map((p) => p.entity.id);
-
       pack.entityTypes.forEach((t) => {
-        const rule = (role.scopes && role.scopes[t.id]) || 'all';
-        if (rule === 'all') { allowed[t.id] = null; return; }   // null = everything
-        if (rule === 'none') { allowed[t.id] = new Set(); return; }
-        allowed[t.id] = new Set();
+        allowed[t.id] = (scopes[t.id] || 'all') === 'all' ? null : new Set();
       });
+      if (!persona) return { allowed, rule: scopes };
+      const groupId = sh.assignEdge
+        ? (() => { const n = graph.neighbour(persona.entity.id, sh.assignEdge.id, { dir: 'out', at: pack.asOf }); return n ? n.entity.id : null; })()
+        : null;
 
-      if (!persona) return { allowed, rule: role.scopes || {} };
+      const events = new Set();
+      const clients = new Set();
+      const workers = new Set([persona.entity.id]);
 
-      const unitId = (() => {
-        const n = graph.neighbour(persona.entity.id, 'assigned_to', { dir: 'out', at: pack.asOf });
-        return n ? n.entity.id : null;
-      })();
-
-      const scopedEncounters = new Set();
-      const scopedPatients = new Set();
-      const scopedStaff = new Set();
-
-      if ((role.scopes.encounter === 'unit' || role.scopes.patient === 'unit' || role.scopes.staff === 'unit') && unitId) {
-        graph.neighbours(unitId, 'occurred_at', { dir: 'in' }).forEach((n) => scopedEncounters.add(n.entity.id));
-        graph.neighbours(unitId, 'assigned_to', { dir: 'in' }).forEach((n) => scopedStaff.add(n.entity.id));
-        scopedStaff.add(persona.entity.id);
+      const wantsGroup = Object.keys(scopes).some((k) => scopes[k] === 'group');
+      if (wantsGroup && groupId) {
+        if (sh.eventGroupEdge) graph.neighbours(groupId, sh.eventGroupEdge.id, { dir: 'in' }).forEach((n) => events.add(n.entity.id));
+        if (sh.assignEdge) graph.neighbours(groupId, sh.assignEdge.id, { dir: 'in' }).forEach((n) => workers.add(n.entity.id));
       }
-      if (role.scopes.encounter === 'care' || role.scopes.patient === 'care') {
-        graph.neighbours(persona.entity.id, 'care_team', { dir: 'in' }).forEach((n) => scopedEncounters.add(n.entity.id));
-        graph.neighbours(persona.entity.id, 'panel_of', { dir: 'in' }).forEach((n) => scopedPatients.add(n.entity.id));
+      const wantsBook = Object.keys(scopes).some((k) => scopes[k] === 'book');
+      if (wantsBook) {
+        if (sh.eventWorkerEdge) graph.neighbours(persona.entity.id, sh.eventWorkerEdge.id, { dir: 'in' }).forEach((n) => events.add(n.entity.id));
+        if (sh.clientWorkerEdge) graph.neighbours(persona.entity.id, sh.clientWorkerEdge.id, { dir: 'in' }).forEach((n) => clients.add(n.entity.id));
       }
-      scopedEncounters.forEach((eid) => {
-        const p = graph.neighbour(eid, 'encounter_of', { dir: 'out' });
-        if (p) scopedPatients.add(p.entity.id);
-      });
+      if (sh.eventClientEdge) {
+        events.forEach((eid) => {
+          const c = graph.neighbour(eid, sh.eventClientEdge.id, { dir: 'out' });
+          if (c) clients.add(c.entity.id);
+        });
+      }
 
-      if (role.scopes.staff === 'unit') allowed.staff = scopedStaff;
-      if (role.scopes.encounter === 'unit' || role.scopes.encounter === 'care') allowed.encounter = scopedEncounters;
-      if (role.scopes.patient === 'unit' || role.scopes.patient === 'care') allowed.patient = scopedPatients;
+      if (sh.workerType && (scopes[sh.workerType] === 'group' || scopes[sh.workerType] === 'book')) allowed[sh.workerType] = workers;
+      if (sh.eventType && (scopes[sh.eventType] === 'group' || scopes[sh.eventType] === 'book')) allowed[sh.eventType] = events;
+      if (sh.clientType && (scopes[sh.clientType] === 'group' || scopes[sh.clientType] === 'book')) allowed[sh.clientType] = clients;
 
-      return { allowed, rule: role.scopes || {}, unitId };
+      return { allowed, rule: scopes, groupId };
     }
 
     function canOpen(id) {
@@ -3235,7 +4932,55 @@ input.in::placeholder { color: var(--ink-3); }
 
     /* ------------------------------------------------------------ actions */
 
-    function emit() { recompute(); save(state); listeners.forEach((fn) => fn(view)); }
+    function emit() { platformCache = null; recompute(); save(state); listeners.forEach((fn) => fn(view)); }
+
+    /* ----------------------------------------------------------- platform
+     *
+     * The operator's view: every tenant on the instance, resolved through the
+     * same engine. Statistics are skipped here — this is a control plane, not
+     * a reporting surface, and running them for every tenant would cost more
+     * than the page is worth.
+     */
+    function platform() {
+      if (platformCache) return platformCache;
+      const tenants = Object.keys(packs).map((id) => {
+        const pack = preparePack(id);
+        const policy = policyFor(pack);
+        const identity = SOT.identity.resolveIdentities(pack, {
+          forcedLinks: state.forcedLinks.filter((f) => f.pack === id),
+          dismissedKeys: state.dismissedKeys.filter((k) => k.indexOf(id + '::') === 0).map((k) => k.split('::')[1]),
+        });
+        const resolution = SOT.resolve.resolveAll(pack, identity, policy, pack.asOf);
+        const graph = SOT.graph.build(identity.entities, pack.edges, identity.entityIdOf);
+        const profiles = Object.values(resolution.profiles);
+        const counts = {};
+        pack.entityTypes.forEach((t) => { counts[t.id] = profiles.filter((p) => p.type === t.id).length; });
+        const degraded = pack.systems.filter((sy) => pack.syncState[sy.id].status !== 'healthy');
+        const openTasks = SOT.tasks.generate(pack, resolution, identity, formatValue)
+          .filter((t) => (state.taskStatus[id + '::' + t.id] || 'open') === 'open').length;
+        return {
+          id, label: pack.label, industry: pack.industry || '—', tenantName: pack.tenantName, tagline: pack.tagline,
+          entities: identity.stats.entities, records: identity.stats.sourceRecords,
+          edges: graph.edges.length, systems: pack.systems.length, degraded: degraded.length,
+          findings: resolution.conflicts.length,
+          actionable: resolution.conflicts.filter((c) => c.actionable).length,
+          critical: resolution.conflicts.filter((c) => c.severity === 'critical').length,
+          queue: identity.stats.needsReview, openTasks,
+          alignment: profiles.length ? Math.round(profiles.reduce((a, b) => a + b.alignment, 0) / profiles.length) : 100,
+          counts, entityTypes: pack.entityTypes, roles: pack.roles, fields: pack.fields.length,
+          policyChanged: Object.keys(state.policies[id] || {}).length,
+          syncState: pack.syncState, systemList: pack.systems, recordCounts: pack.recordCounts,
+          generated: !!pack.industry && ['salon', 'edu', 'wealth', 'freight'].indexOf(id) >= 0,
+        };
+      });
+      const totals = tenants.reduce((a, t) => ({
+        entities: a.entities + t.entities, records: a.records + t.records, edges: a.edges + t.edges,
+        systems: a.systems + t.systems, findings: a.findings + t.findings, queue: a.queue + t.queue,
+        degraded: a.degraded + t.degraded, critical: a.critical + t.critical,
+      }), { entities: 0, records: 0, edges: 0, systems: 0, findings: 0, queue: 0, degraded: 0, critical: 0 });
+      platformCache = { tenants, totals };
+      return platformCache;
+    }
 
     const api = {
       get state() { return state; },
@@ -3244,14 +4989,28 @@ input.in::placeholder { color: var(--ink-3); }
 
       subscribe(fn) { listeners.push(fn); return () => listeners.splice(listeners.indexOf(fn), 1); },
 
-      signIn(roleId) { state.roleId = roleId; state.signedIn = true; emit(); },
-      signOut() { state.signedIn = false; emit(); },
-      setRole(roleId) { state.roleId = roleId; emit(); },
+      signIn(roleId) {
+        state.roleId = roleId; state.signedIn = true; state.owner = false;
+        audit('session.start', 'Signed in as ' + roleId);
+        emit();
+      },
+      signInOwner() {
+        state.owner = true; state.signedIn = true;
+        audit('session.start', 'Operator console opened', 'platform');
+        emit();
+      },
+      signOut() { state.signedIn = false; state.owner = false; emit(); },
+      setRole(roleId) { state.roleId = roleId; audit('session.role', 'Switched to ' + roleId); emit(); },
+      platform,
+      platformReady: () => !!platformCache,
+      get audit() { return state.audit; },
       setPack(packId) {
         if (!packs[packId]) return;
         state.packId = packId;
         const pack = preparePack(packId);
         state.roleId = pack.roles[0].id;
+        state.owner = false;
+        audit('tenant.open', 'Opened ' + pack.tenantName, packId);
         emit();
       },
 
@@ -3260,32 +5019,36 @@ input.in::placeholder { color: var(--ink-3); }
         const cur = (state.policies[pack.id] && state.policies[pack.id][field]) || pack.policy[field] || [];
         const next = [systemId].concat(cur.filter((s) => s !== systemId));
         state.policies[pack.id] = Object.assign({}, state.policies[pack.id], { [field]: next });
+        audit('policy.change', field + ' → ' + pack.systemById[systemId].name);
         emit();
       },
-      resetPolicy() { delete state.policies[view.pack.id]; emit(); },
+      resetPolicy() { delete state.policies[view.pack.id]; audit('policy.reset', 'Restored default policy'); emit(); },
       policyChanged() {
         const o = state.policies[view.pack.id] || {};
         return Object.keys(o).filter((k) => o[k].join(',') !== (view.pack.policy[k] || []).join(','));
       },
 
-      setTaskStatus(id, status) { state.taskStatus[view.pack.id + '::' + id] = status; emit(); },
-      bulkTaskStatus(ids, status) { ids.forEach((id) => { state.taskStatus[view.pack.id + '::' + id] = status; }); emit(); },
+      setTaskStatus(id, status) { state.taskStatus[view.pack.id + '::' + id] = status; audit('task.' + status, id); emit(); },
+      bulkTaskStatus(ids, status) { ids.forEach((id) => { state.taskStatus[view.pack.id + '::' + id] = status; }); audit('task.bulk', ids.length + ' items → ' + status); emit(); },
 
       confirmLink(entityId, system, nativeId) {
         const e = view.identity.entityById[entityId];
         if (!e) return;
         const anchor = e.links.find((l) => l.method === 'anchor') || e.links[0];
         state.forcedLinks.push({ pack: view.pack.id, a: anchor.system + ':' + anchor.nativeId, b: system + ':' + nativeId });
+        audit('identity.confirm', pack_(view).systemById[system].name + ' ' + nativeId + ' → ' + e.displayName);
         emit();
       },
-      dismissRecord(system, nativeId) { state.dismissedKeys.push(view.pack.id + '::' + system + ':' + nativeId); emit(); },
+      dismissRecord(system, nativeId) { state.dismissedKeys.push(view.pack.id + '::' + system + ':' + nativeId); audit('identity.dismiss', system + ' ' + nativeId); emit(); },
 
       resetAll() {
         state.policies = {}; state.taskStatus = {}; state.forcedLinks = []; state.dismissedKeys = [];
+        audit('prototype.reset', 'All local changes cleared');
         emit();
       },
 
       canOpen, visible, formatValue,
+      packFor: (id) => preparePack(id),
       /** A coded value that points at another entity, resolved to that entity. */
       resolveCode(fieldKey, value) {
         const ref = (view.pack.codeRefs || {})[fieldKey];
@@ -3300,6 +5063,8 @@ input.in::placeholder { color: var(--ink-3); }
     recompute();
     return api;
   }
+
+  const pack_ = (v) => v.pack;
 
   SOT.store = { create, formatValue };
 })(window.SOT || (window.SOT = {}));
@@ -3365,6 +5130,15 @@ input.in::placeholder { color: var(--ink-3); }
       case 'daysAgo': return s.value + 'd';
       case 'years': return s.value + ' yr';
       case 'ratio': return s.value + '×';
+      case 'money': {
+        const v = Math.abs(s.value);
+        if (v >= 1e9) return '$' + (v / 1e9).toFixed(1) + 'bn';
+        if (v >= 1e6) return '$' + (v / 1e6).toFixed(v >= 1e7 ? 0 : 1) + 'm';
+        if (v >= 1e3) return '$' + Math.round(v / 1e3) + 'k';
+        return '$' + Math.round(v);
+      }
+      case 'miles': return Math.round(s.value).toLocaleString('en-US') + ' mi';
+      case 'hours': return s.value + ' h';
       case 'date': return date(s.value);
       default: return typeof s.value === 'number' ? s.value.toLocaleString('en-US') : String(s.value);
     }
@@ -3757,8 +5531,8 @@ input.in::placeholder { color: var(--ink-3); }
   function describeScope(role, typeId) {
     const rule = (role.scopes || {})[typeId];
     if (rule === 'none') return 'no records of this kind at all';
-    if (rule === 'unit') return 'only records attached to their own unit';
-    if (rule === 'care') return 'only records for people in their care';
+    if (rule === 'unit' || rule === 'group') return 'only records attached to their own group';
+    if (rule === 'care' || rule === 'book') return 'only records they personally handle';
     return 'everything';
   }
 
@@ -4562,6 +6336,403 @@ input.in::placeholder { color: var(--ink-3); }
 })(window.SOT || (window.SOT = {}));
 </script>
 <script>
+/* --- ui/views-owner.js --- */
+/* SOT — operator console.
+ *
+ * The view from Kaliris Labs rather than from inside a customer: every tenant
+ * on the instance, every connector, the shared model that all of them run on,
+ * who has access to what, what has been changed, and what is left to build.
+ *
+ * It is deliberately a control plane and not a second analytics product. The
+ * question it answers is "is the platform healthy and who did what", not
+ * "how is the business doing" — that is what the tenant view is for.
+ */
+(function (SOT) {
+  'use strict';
+
+  const U = () => SOT.ui;
+  const S = SOT.schema;
+
+  /* ══════════════════════════════════════════════════════════════ TENANTS ═ */
+
+  function tenants(ctx) {
+    const u = U();
+    const { store } = ctx;
+    const p = store.platform();
+
+    return (
+      head('Tenants', 'Every organization on this instance, resolved through the same engine. ' +
+        'Two were hand-written; four are declarations against the vertical toolkit. Nothing downstream can tell which is which.') +
+
+      '<div class="grid g-stat" style="margin-bottom:12px">' +
+      u.stat('Tenants', p.tenants.length, 'Across ' + new Set(p.tenants.map((t) => t.industry)).size + ' industries') +
+      u.stat('Entities resolved', p.totals.entities.toLocaleString('en-US'), 'People, places, groups and events') +
+      u.stat('Source records', p.totals.records.toLocaleString('en-US'), 'Read from ' + p.totals.systems + ' connectors') +
+      u.stat('Relationships', p.totals.edges.toLocaleString('en-US'), 'Typed and time-bounded') +
+      u.stat('Open findings', p.totals.findings.toLocaleString('en-US'), p.totals.critical + ' critical', p.totals.critical ? 'hot' : '') +
+      u.stat('Degraded connectors', p.totals.degraded, 'Across all tenants', p.totals.degraded ? 'hot' : '') +
+      '</div>' +
+
+      '<div class="card"><div class="card-h"><h3>Instance</h3><span class="sub">click a row to enter that tenant</span></div>' +
+      '<div class="card-b flush"><div class="xs"><table class="tbl">' +
+      '<thead><tr><th>Tenant</th><th>Industry</th><th>Origin</th><th class="num">Entities</th><th class="num">Records</th>' +
+      '<th class="num">Connectors</th><th class="num">Findings</th><th class="num">Queue</th><th class="num">Alignment</th></tr></thead><tbody>' +
+      p.tenants.map((t) =>
+        '<tr class="go" data-act="enter-tenant" data-tenant="' + u.at(t.id) + '">' +
+        '<td><b>' + u.esc(t.tenantName) + '</b><div class="dim" style="font-size:10.5px">' + u.esc(t.label) + '</div></td>' +
+        '<td class="dim">' + u.esc(t.industry) + '</td>' +
+        '<td>' + (t.generated ? u.tag('declared', 'line') : u.tag('hand-written', 'line')) + '</td>' +
+        '<td class="num">' + t.entities.toLocaleString('en-US') + '</td>' +
+        '<td class="num">' + t.records.toLocaleString('en-US') + '</td>' +
+        '<td class="num">' + t.systems + (t.degraded ? ' ' + u.tag(t.degraded + ' down', 'critical') : '') + '</td>' +
+        '<td class="num">' + (t.critical ? u.tag(String(t.findings), 'critical') : t.findings) + '</td>' +
+        '<td class="num">' + t.queue + '</td>' +
+        '<td class="num">' + t.alignment + '%</td></tr>').join('') +
+      '</tbody></table></div></div></div>' +
+
+      '<div class="grid g-3" style="margin-top:12px">' +
+      p.tenants.map((t) =>
+        '<div class="card"><div class="card-h"><h3>' + u.esc(t.tenantName) + '</h3>' +
+        '<div class="right"><button class="btn sm" data-act="enter-tenant" data-tenant="' + u.at(t.id) + '">Open</button></div></div>' +
+        '<div class="card-b">' +
+        '<div class="dim" style="font-size:11.5px;margin-bottom:10px;line-height:1.5">' + u.esc(t.tagline) + '</div>' +
+        '<table class="tbl" style="font-size:12px"><tbody>' +
+        t.entityTypes.map((et) => '<tr><td style="padding-left:0">' + u.esc(et.plural) + '</td>' +
+          '<td class="num">' + (t.counts[et.id] || 0).toLocaleString('en-US') + '</td></tr>').join('') +
+        '</tbody></table>' +
+        '<div class="dim" style="margin-top:10px;padding-top:9px;border-top:1px solid var(--border);font-size:11px">' +
+        t.fields + ' reconciled fields · ' + t.roles.length + ' roles' +
+        (t.policyChanged ? ' · ' + u.esc(String(t.policyChanged)) + ' policy override' + (t.policyChanged === 1 ? '' : 's') : '') +
+        '</div></div></div>').join('') +
+      '</div>'
+    );
+  }
+
+  /* ═══════════════════════════════════════════════════════════ CONNECTORS ═ */
+
+  function connectors(ctx) {
+    const u = U();
+    const { store } = ctx;
+    const p = store.platform();
+    const rows = [];
+    p.tenants.forEach((t) => t.systemList.forEach((sy) => {
+      const st = t.syncState[sy.id];
+      rows.push({ tenant: t, sy, st, records: t.recordCounts[sy.id] || 0 });
+    }));
+    rows.sort((a, b) => (a.st.status === 'healthy' ? 1 : 0) - (b.st.status === 'healthy' ? 1 : 0) || a.st.lastSync - b.st.lastSync);
+    const now = Date.now();
+    const asOfOf = (t) => p.tenants.find((x) => x.id === t.id).syncState;
+
+    return (
+      head('Connectors', 'Every integration across every tenant. A connector that has stopped responding does not produce wrong answers — ' +
+        'it produces answers classified as lag, which is the difference between a queue people work and a report people mute.') +
+
+      '<div class="grid g-stat" style="margin-bottom:12px">' +
+      u.stat('Connectors', rows.length, 'Across ' + p.tenants.length + ' tenants') +
+      u.stat('Healthy', rows.filter((r) => r.st.status === 'healthy').length, 'Reading on schedule') +
+      u.stat('Degraded', rows.filter((r) => r.st.status !== 'healthy').length, 'Needs attention', rows.some((r) => r.st.status !== 'healthy') ? 'hot' : '') +
+      u.stat('Records read', p.totals.records.toLocaleString('en-US'), 'Person, place and event rows') +
+      u.stat('Categories', new Set(rows.map((r) => r.sy.category)).size, 'Distinct kinds of system') +
+      '</div>' +
+
+      '<div class="card"><div class="card-h"><h3>All integrations</h3><span class="sub">worst first</span></div>' +
+      '<div class="card-b flush"><div class="xs"><table class="tbl">' +
+      '<thead><tr><th>Connector</th><th>Tenant</th><th>Category</th><th>Cadence</th><th>Last read</th><th class="num">Records</th><th>Status</th></tr></thead><tbody>' +
+      rows.map((r) =>
+        '<tr class="go" data-act="enter-tenant" data-tenant="' + u.at(r.tenant.id) + '" data-to="#/systems">' +
+        '<td><b>' + u.esc(r.sy.name) + '</b><div class="dim" style="font-size:10.5px">' + u.esc(r.sy.blurb) + '</div></td>' +
+        '<td class="dim">' + u.esc(r.tenant.tenantName) + '</td>' +
+        '<td class="dim">' + u.esc(r.sy.category) + '</td>' +
+        '<td class="dim">' + u.esc(r.sy.syncCadence) + '</td>' +
+        '<td class="dim">' + u.esc(u.ago(r.st.lastSync, now)) + '</td>' +
+        '<td class="num">' + r.records.toLocaleString('en-US') + '</td>' +
+        '<td>' + (r.st.status === 'healthy' ? u.tag('healthy', 'ok') : u.tag('degraded', 'critical')) + '</td></tr>').join('') +
+      '</tbody></table></div></div></div>' +
+
+      (rows.some((r) => r.st.message)
+        ? '<div class="card" style="margin-top:12px"><div class="card-h"><h3>Notices</h3></div><div class="card-b flush">' +
+          '<table class="tbl"><tbody>' + rows.filter((r) => r.st.message).map((r) =>
+            '<tr><td style="width:200px"><b>' + u.esc(r.sy.name) + '</b><div class="dim" style="font-size:10.5px">' +
+            u.esc(r.tenant.tenantName) + '</div></td><td>' + u.esc(r.st.message) + '</td>' +
+            '<td style="text-align:right">' + (r.st.status === 'healthy' ? u.tag('by design', 'line') : u.tag('degraded', 'critical')) + '</td></tr>').join('') +
+          '</tbody></table></div></div>'
+        : '')
+    );
+  }
+
+  /* ════════════════════════════════════════════════════════════════ MODEL ═ */
+
+  function model(ctx) {
+    const u = U();
+    const { store, state } = ctx;
+    const p = store.platform();
+    const sel = state.ownerTenant || p.tenants[0].id;
+    const t = p.tenants.find((x) => x.id === sel) || p.tenants[0];
+    const pack = store.packFor(t.id);
+
+    return (
+      head('Model', 'What each tenant declares. The engine has no opinion about hospitals or freight — it reads these declarations, ' +
+        'and everything else follows from them.') +
+
+      '<div class="chips" style="margin-bottom:12px">' +
+      p.tenants.map((x) => '<button class="chip ' + (x.id === sel ? 'on' : '') + '" data-act="owner-tenant" data-tenant="' + u.at(x.id) + '">' +
+        u.esc(x.tenantName) + '</button>').join('') + '</div>' +
+
+      '<div class="split"><div class="grid" style="gap:12px">' +
+      '<div class="card"><div class="card-h"><h3>Entity types</h3><span class="sub">' + pack.entityTypes.length + '</span></div>' +
+      '<div class="card-b flush"><table class="tbl"><thead><tr><th>Type</th><th>Structural role</th><th>Authoritative source</th><th class="num">Resolved</th></tr></thead><tbody>' +
+      pack.entityTypes.map((et) =>
+        '<tr><td><span class="av sq sm" style="display:inline-grid;vertical-align:middle;margin-right:7px">' + u.esc(et.glyph) + '</span><b>' +
+        u.esc(et.label) + '</b><div class="dim mono" style="margin-left:29px">' + u.esc(et.id) + '</div></td>' +
+        '<td class="dim">' + u.esc(et.kind) + '</td>' +
+        '<td>' + et.masterSystems.map((sy) => u.systemTag(pack, sy)).join(' ') + '</td>' +
+        '<td class="num">' + (t.counts[et.id] || 0).toLocaleString('en-US') + '</td></tr>').join('') +
+      '</tbody></table></div></div>' +
+
+      '<div class="card"><div class="card-h"><h3>Relationship types</h3><span class="sub">' + pack.edgeTypes.length + '</span></div>' +
+      '<div class="card-b flush"><table class="tbl"><thead><tr><th>Relationship</th><th>From → to</th><th>Time-bounded</th></tr></thead><tbody>' +
+      pack.edgeTypes.map((e) =>
+        '<tr><td><b>' + u.esc(e.label) + '</b><div class="dim" style="font-size:10.5px">inverse: ' + u.esc(e.inverse) + '</div></td>' +
+        '<td class="dim">' + u.esc(pack.typeById[e.from].label) + ' → ' + u.esc(pack.typeById[e.to].label) + '</td>' +
+        '<td>' + (e.temporal ? u.tag('yes', 'ok') : '<span class="dim">no</span>') + '</td></tr>').join('') +
+      '</tbody></table></div></div>' +
+
+      '<div class="card"><div class="card-h"><h3>Field catalog</h3><span class="sub">' + pack.fields.length + ' reconciled fields</span></div>' +
+      '<div class="card-b flush"><div class="xs"><table class="tbl"><thead><tr><th>Field</th><th>On</th><th>Carried by</th><th>Sensitivity</th><th class="num">Weight</th></tr></thead><tbody>' +
+      pack.fields.map((f) =>
+        '<tr><td><b>' + u.esc(f.label) + '</b><div class="dim mono">' + u.esc(f.key) + '</div></td>' +
+        '<td class="dim">' + u.esc(pack.typeById[f.entity].label) + '</td>' +
+        '<td>' + f.contributors.map((sy) => u.systemTag(pack, sy)).join(' ') + '</td>' +
+        '<td>' + u.tag(f.sensitivity, f.sensitivity === 'protected' ? 'critical' : f.sensitivity === 'confidential' ? 'high' : 'line') + '</td>' +
+        '<td class="num">' + f.weight + '</td></tr>').join('') +
+      '</tbody></table></div></div></div>' +
+      '</div>' +
+
+      '<div class="grid" style="gap:12px">' +
+      '<div class="card"><div class="card-h"><h3>Identity matching</h3></div><div class="card-b">' +
+      '<div class="muted" style="font-size:12.5px;line-height:1.6;margin-bottom:11px">Shared by every tenant. Rules produce scores; ' +
+      'scores at or above ' + Math.round(S.AUTO_LINK * 100) + '% link automatically, the middle band becomes a queue, below ' +
+      Math.round(S.REVIEW * 100) + '% is not a match.</div>' +
+      '<table class="tbl" style="font-size:12px"><tbody>' +
+      Object.keys(S.KEY_STRENGTH).map((k) =>
+        '<tr><td style="padding-left:0">' + u.esc(S.KEY_STRENGTH[k].label) + '</td>' +
+        '<td style="text-align:right">' + u.tag(Math.round(S.KEY_STRENGTH[k].score * 100) + '%',
+          S.KEY_STRENGTH[k].score >= S.AUTO_LINK ? 'ok' : 'medium') + '</td></tr>').join('') +
+      '</tbody></table></div></div>' +
+
+      '<div class="card"><div class="card-h"><h3>Adding an industry</h3></div><div class="card-b muted" style="font-size:12.5px;line-height:1.7">' +
+      'A vertical is a declaration: the words it uses, the systems it reads, which system carries which field, and which of the ' +
+      'standard failure modes apply. Four of the six tenants here were produced that way.' +
+      '<div style="margin-top:11px">The skeleton underneath is deliberately small — somewhere work happens, a team inside it, someone who ' +
+      'does the work, someone it is done for, and a dated record that joins them. A ward round, a freight load, a salon appointment and a ' +
+      'client review are the same shape.</div>' +
+      '<div style="margin-top:11px"><a class="btn" href="#/owner/roadmap">What is left to build →</a></div>' +
+      '</div></div></div></div>'
+    );
+  }
+
+  /* ═══════════════════════════════════════════════════════════════ ACCESS ═ */
+
+  const OPERATORS = [
+    { name: 'You', email: 'owner@kalirislabs.example', role: 'Owner', tenants: 'All tenants', mfa: true, last: 0 },
+    { name: 'R. Okafor', email: 'r.okafor@kalirislabs.example', role: 'Platform admin', tenants: 'All tenants', mfa: true, last: 6 },
+    { name: 'J. Mensah', email: 'j.mensah@kalirislabs.example', role: 'Implementation', tenants: 'Thornfield · Halyard', mfa: true, last: 31 },
+    { name: 'P. Vasquez', email: 'p.vasquez@kalirislabs.example', role: 'Support', tenants: 'Read-only, all tenants', mfa: false, last: 74 },
+    { name: 'Ingest service', email: 'svc-ingest@kalirislabs.example', role: 'Service account', tenants: 'All tenants', mfa: null, last: 0 },
+  ];
+
+  function access(ctx) {
+    const u = U();
+    const { store } = ctx;
+    const p = store.platform();
+
+    return (
+      head('Access', 'Who can reach what, on the platform side and inside each tenant. In production these checks belong below the API — ' +
+        'this prototype enforces them in the interface, which is not the same thing and is called out as such.') +
+
+      '<div class="card" style="margin-bottom:12px"><div class="card-h"><h3>Operator accounts</h3>' +
+      '<span class="sub">Kaliris Labs staff and services</span></div><div class="card-b flush"><div class="xs">' +
+      '<table class="tbl"><thead><tr><th>Person</th><th>Role</th><th>Scope</th><th>MFA</th><th>Last active</th></tr></thead><tbody>' +
+      OPERATORS.map((o) =>
+        '<tr><td><b>' + u.esc(o.name) + '</b><div class="dim mono">' + u.esc(o.email) + '</div></td>' +
+        '<td>' + u.esc(o.role) + '</td><td class="dim">' + u.esc(o.tenants) + '</td>' +
+        '<td>' + (o.mfa === null ? '<span class="dim">n/a</span>' : o.mfa ? u.tag('on', 'ok') : u.tag('off', 'critical')) + '</td>' +
+        '<td class="dim">' + (o.last === 0 ? 'now' : o.last + ' h ago') + '</td></tr>').join('') +
+      '</tbody></table></div></div></div>' +
+
+      '<div class="card" style="margin-bottom:12px"><div class="card-h"><h3>Tenant roles</h3>' +
+      '<span class="sub">' + p.tenants.reduce((a, t) => a + t.roles.length, 0) + ' across all tenants</span></div>' +
+      '<div class="card-b flush"><div class="xs"><table class="tbl">' +
+      '<thead><tr><th>Tenant</th><th>Role</th><th>Persona</th><th>Sees</th><th>Max sensitivity</th></tr></thead><tbody>' +
+      p.tenants.map((t) => t.roles.map((r) =>
+        '<tr><td class="dim">' + u.esc(t.tenantName) + '</td><td><b>' + u.esc(r.name) + '</b></td>' +
+        '<td class="dim">' + u.esc(r.persona) + '</td>' +
+        '<td style="font-size:11px">' + Object.keys(r.scopes || {}).map((k) => {
+          const rule = r.scopes[k];
+          const tl = (t.entityTypes.find((et) => et.id === k) || {}).plural || k;
+          return rule === 'all' ? '' : u.esc(tl) + ': ' + u.esc(rule);
+        }).filter(Boolean).join(' · ') || '<span class="dim">everything</span>' + '</td>' +
+        '<td>' + u.tag(r.maxSensitivity, r.maxSensitivity === 'protected' ? 'critical' : 'medium') + '</td></tr>').join('')).join('') +
+      '</tbody></table></div></div></div>' +
+
+      '<div class="note medium"><span>▲</span><div><b>Not production enforcement.</b> Scopes and sensitivity are honoured by this ' +
+      'interface, and the model behind them is real, but a shipped platform must evaluate both below the API on every read, with ' +
+      'per-tenant isolation and an immutable log of what was served. That work is on the roadmap and is not optional for a customer ' +
+      'holding clinical or personnel data.</div></div>'
+    );
+  }
+
+  /* ════════════════════════════════════════════════════════════════ AUDIT ═ */
+
+  function auditView(ctx) {
+    const u = U();
+    const { store } = ctx;
+    const rows = store.audit;
+    const now = Date.now();
+    const label = { 'policy.change': 'Policy', 'policy.reset': 'Policy', 'identity.confirm': 'Identity',
+      'identity.dismiss': 'Identity', 'tenant.open': 'Tenant', 'tenant.provision': 'Tenant',
+      'session.start': 'Session', 'session.role': 'Session', 'connector.degraded': 'Connector',
+      'sync.complete': 'Connector', 'prototype.reset': 'Platform' };
+
+    return (
+      head('Activity', 'Everything that changed, who changed it and when. Policy edits, identity decisions and remediation calls ' +
+        'are the actions that alter what the platform reports as true, so they are the ones that have to be recoverable.') +
+
+      '<div class="grid g-stat" style="margin-bottom:12px">' +
+      u.stat('Entries', rows.length, 'This session and seeded history') +
+      u.stat('Policy changes', rows.filter((r) => r.action.indexOf('policy') === 0).length, 'Changes to what counts as true') +
+      u.stat('Identity decisions', rows.filter((r) => r.action.indexOf('identity') === 0).length, 'Links confirmed or set aside') +
+      u.stat('Remediation', rows.filter((r) => r.action.indexOf('task') === 0).length, 'Accepted, fixed or set aside') +
+      '</div>' +
+
+      '<div class="card"><div class="card-h"><h3>Log</h3><span class="sub">newest first</span></div>' +
+      '<div class="card-b flush"><div class="xs"><table class="tbl">' +
+      '<thead><tr><th>When</th><th>Actor</th><th>Tenant</th><th>Kind</th><th>Detail</th></tr></thead><tbody>' +
+      rows.slice(0, 120).map((r) =>
+        '<tr><td class="dim" style="white-space:nowrap">' + u.esc(u.ago(r.ts, now)) + '</td>' +
+        '<td class="mono">' + u.esc(r.actor) + '</td>' +
+        '<td class="dim">' + u.esc(r.tenant === 'platform' ? '—' : ((SOT.packs[r.tenant] || {}).tenantName || r.tenant)) + '</td>' +
+        '<td>' + u.tag(label[r.action] || r.action.split('.')[0], 'line') + '</td>' +
+        '<td>' + u.esc(r.detail) + '</td></tr>').join('') +
+      '</tbody></table></div></div></div>' +
+
+      '<div class="dim" style="margin-top:9px;font-size:11.5px">In production this is append-only, signed, exportable and retained ' +
+      'per the tenant’s contract. Here it lives in the browser and resets with the prototype.</div>'
+    );
+  }
+
+  /* ══════════════════════════════════════════════════════════════ ROADMAP ═ */
+
+  const ROADMAP = [
+    { phase: 'Now — make it real', items: [
+      { t: 'Move the engine server-side behind Postgres', s: 'next', e: 'L',
+        d: 'Tables follow the model directly: sources, source_records, entities, entity_links, assertions (append-only), edges with valid-time columns, policies, findings, tasks. `resolveAll()` becomes an incremental job plus a query layer. Nothing about the computation changes — this is a hosting move, not a redesign.' },
+      { t: 'Wrap the interface in Next.js and TypeScript', s: 'next', e: 'M',
+        d: 'The view functions become components with the same signatures. Type the pack declaration first — it is the contract every vertical is written against, and a typo in a field map currently fails silently.' },
+      { t: 'Build two real connectors end to end', s: 'next', e: 'L',
+        d: 'Pick the two that prove the shape: one HR system (SCIM or a vendor REST API) and one operational system (FHIR for health, or the CRM for revenue). Only the adapter changes — identity(), assertions(), and a fetch. Getting two working de-risks the other forty.' },
+      { t: 'Incremental resolution instead of full recompute', s: 'later', e: 'M',
+        d: 'Recomputing everything is correct and fast at prototype scale and will not survive a real tenant. Resolve per entity on assertion change, and recompute findings only for the fields touched.' },
+      { t: 'Authorization below the API', s: 'next', e: 'M',
+        d: 'Row and field checks evaluated server-side on every read, per-tenant isolation, and an immutable log of every value served. Every field already carries a sensitivity and every role a scope, so this is a filter over labelled data rather than a schema change.' },
+    ] },
+    { phase: 'Next — make it sellable', items: [
+      { t: 'Pack authoring in the product, not in code', s: 'later', e: 'L',
+        d: 'An implementation consultant should be able to declare a vertical through a form: vocabulary, systems, field map, policy. The declaration is already data; what is missing is an editor, validation and versioning.' },
+      { t: 'Field mapping UI for onboarding', s: 'later', e: 'M',
+        d: 'The hardest part of every implementation is deciding which vendor column means which canonical field. Show a sample of real rows next to the canonical catalog and let someone map them by hand, with suggestions.' },
+      { t: 'Confidence tuning per tenant', s: 'later', e: 'S',
+        d: 'The auto-link threshold is a single global number today. Some customers will want it stricter for patients than for staff. Make it policy, like everything else.' },
+      { t: 'Remediation that closes the loop', s: 'later', e: 'M',
+        d: 'Push tasks into the tool the owning team already uses — ServiceNow, Jira, a queue in the source system — and detect the fix on the next read rather than asking someone to tick a box here.' },
+      { t: 'Scheduled digests and alerting', s: 'later', e: 'S',
+        d: 'A weekly note to each owner listing what appeared, what resolved itself, and what is still open. Findings nobody is told about are findings nobody fixes.' },
+    ] },
+    { phase: 'Then — make it defensible', items: [
+      { t: 'History as a first-class query surface', s: 'idea', e: 'M',
+        d: 'Every edge already carries valid time. Expose "as of" on the whole application: show me this ward, this territory, this org chart as it stood on any past date. Source systems throw this away, which is exactly why it is worth keeping.' },
+      { t: 'Metric reconciliation', s: 'idea', e: 'L',
+        d: 'Explain why the same number differs between two systems by diffing their definitions and attributing the gap term by term. Scope this narrowly — a general query-lineage engine is a different company.' },
+      { t: 'Write-back, carefully', s: 'idea', e: 'L',
+        d: 'Only after remediation has been trusted for a while, only per-field, only with an approval step and a full reversal path. Owning the correctness of a customer\\u2019s clinical record is a liability to take on deliberately, not by default.' },
+      { t: 'Cross-tenant benchmarks', s: 'idea', e: 'M',
+        d: 'Aggregate, anonymised: how does this hospital\\u2019s identity hygiene compare to its peers? Valuable, and a data-governance minefield — needs contractual permission before a line of code.' },
+    ] },
+    { phase: 'Compliance track — runs in parallel', items: [
+      { t: 'SSO and directory provisioning', s: 'next', e: 'M',
+        d: 'SAML or OIDC with SCIM. Nothing sells to an enterprise without it, and it is also how the platform learns who its own users are.' },
+      { t: 'SOC 2 Type II', s: 'next', e: 'L',
+        d: 'Start the observation window early — it is elapsed time, not effort, and it gates the first serious deal.' },
+      { t: 'HIPAA readiness and a BAA', s: 'next', e: 'M',
+        d: 'Required before a single real patient record is touched. Encryption, access logging, retention, breach process, subcontractor flow-down.' },
+      { t: 'Data residency and retention controls', s: 'later', e: 'M',
+        d: 'Per-tenant region pinning and configurable retention. Public sector and European customers will ask on the first call.' },
+    ] },
+    { phase: 'Open questions — decide before building', items: [
+      { t: 'Which vertical do you actually sell first?', s: 'decide', e: '—',
+        d: 'Healthcare has the sharpest pain and the slowest sales cycle. Freight and personal services buy faster and pay less. The engine does not care; the go-to-market does, and pricing, packaging and the first three connectors all follow from the answer.' },
+      { t: 'Read-only or system of action?', s: 'decide', e: '—',
+        d: 'Read-only caps the price and keeps you safe. Write-back raises the ceiling and makes you liable. This decision shapes the security review, the contract and the insurance.' },
+      { t: 'Per-seat, per-entity, or per-connector pricing?', s: 'decide', e: '—',
+        d: 'Per-entity aligns price with value and is legible to a buyer. Per-connector is easier to forecast. Per-seat is worst here — the product is most valuable when everyone can look.' },
+      { t: 'Who owns the policy in a real customer?', s: 'decide', e: '—',
+        d: 'Someone has to be accountable for declaring which system wins. If nobody owns it, the default policy becomes a vendor opinion nobody agreed to, and the first disagreement lands on you.' },
+    ] },
+  ];
+
+  function roadmap() {
+    const u = U();
+    const badge = { next: ['Next up', 'critical'], later: ['Later', 'medium'], idea: ['Idea', 'line'], decide: ['Needs a decision', 'high'] };
+    const effort = { S: 'small', M: 'medium', L: 'large', '—': '' };
+    const all = ROADMAP.reduce((a, p) => a.concat(p.items), []);
+
+    return (
+      head('Roadmap', 'What it would take to run this for real, in the order the dependencies actually fall. ' +
+        'Written to be argued with — the sequencing matters more than the list.') +
+
+      '<div class="grid g-stat" style="margin-bottom:12px">' +
+      u.stat('Items', all.length, 'Across ' + ROADMAP.length + ' tracks') +
+      u.stat('Next up', all.filter((i) => i.s === 'next').length, 'Blocking a first real customer', 'hot') +
+      u.stat('Decisions', all.filter((i) => i.s === 'decide').length, 'Yours to make, not engineering’s') +
+      u.stat('Large efforts', all.filter((i) => i.e === 'L').length, 'Multi-sprint pieces of work') +
+      '</div>' +
+
+      ROADMAP.map((p) =>
+        '<div class="card" style="margin-bottom:12px"><div class="card-h"><h3>' + u.esc(p.phase) + '</h3>' +
+        '<span class="sub">' + p.items.length + '</span></div><div class="card-b flush"><table class="tbl"><tbody>' +
+        p.items.map((i) =>
+          '<tr><td style="width:34%"><b>' + u.esc(i.t) + '</b>' +
+          '<div style="margin-top:5px;display:flex;gap:5px;flex-wrap:wrap">' +
+          u.tag(badge[i.s][0], badge[i.s][1]) +
+          (effort[i.e] ? u.tag(effort[i.e], 'line') : '') + '</div></td>' +
+          '<td class="muted" style="line-height:1.6">' + u.esc(i.d) + '</td></tr>').join('') +
+        '</tbody></table></div></div>').join('') +
+
+      '<div class="card"><div class="card-h"><h3>What this prototype already settles</h3></div>' +
+      '<div class="card-b muted" style="font-size:12.5px;line-height:1.7;max-width:92ch">' +
+      'The parts that are usually argued about for months are decided and demonstrated here: truth is computed from a policy rather than ' +
+      'stored, disagreements are classified instead of merely counted, relationships carry valid time so the past stays answerable, ' +
+      'identity is scored with a human queue for the uncertain middle, and a vertical is a declaration rather than a fork. ' +
+      'Six industries run on it with no engine changes between them.' +
+      '<div style="margin-top:11px">What is unproven is everything about operating it: scale, incremental resolution, real connector ' +
+      'behaviour against real APIs, and whether a customer will accept a policy they have to own. Those are the first things to find out, ' +
+      'and none of them require rebuilding what is here.</div>' +
+      '</div></div>'
+    );
+  }
+
+  /* -------------------------------------------------------------- helpers */
+
+  function head(title, sub) {
+    const u = U();
+    return '<div class="head"><div><h1>' + u.esc(title) + '</h1>' +
+      '<div class="sub">' + u.esc(sub) + '</div></div></div>';
+  }
+
+  SOT.owner = { tenants, connectors, model, access, audit: auditView, roadmap, ROADMAP, OPERATORS };
+})(window.SOT || (window.SOT = {}));
+</script>
+<script>
 /* --- ui/app.js --- */
 /* SOT — shell, routing, search and the drill trail.
  *
@@ -4589,7 +6760,17 @@ input.in::placeholder { color: var(--ink-3); }
     palQ: '',
     palSel: 0,
     trail: [],
+    ownerTenant: null,
   };
+
+  const OWNER_NAV = [
+    { href: '#/owner/tenants', label: 'Tenants', g: '▦' },
+    { href: '#/owner/connectors', label: 'Connectors', g: '⧉' },
+    { href: '#/owner/model', label: 'Model', g: '◈' },
+    { href: '#/owner/access', label: 'Access', g: '⚯' },
+    { href: '#/owner/audit', label: 'Activity', g: '✓' },
+    { href: '#/owner/roadmap', label: 'Roadmap', g: '→' },
+  ];
 
   function parseRoute() {
     const raw = (location.hash || '#/dashboard').slice(1);
@@ -4615,23 +6796,27 @@ input.in::placeholder { color: var(--ink-3); }
       '<p>Your systems each hold a fragment — who they are, where they sit, who they report to, who they treated, ' +
       'which territory they carry. SOT resolves one identity per person, per place, per event, and lets you follow ' +
       'the thread from any one of them to all the others.</p></div>' +
-      '<div class="fine"><b>Prototype.</b> Every record is synthetic — ' +
-      view.identity.stats.entities.toLocaleString('en-US') + ' generated entities and ' +
-      view.identity.stats.sourceRecords.toLocaleString('en-US') + ' source records across ' + view.pack.systems.length +
-      ' simulated connectors. No live system is contacted, no credentials exist in the codebase, and no real personal, ' +
-      'clinical or personnel data is used anywhere.</div>' +
+      '<div class="fine"><b>Prototype.</b> Six organizations across six industries, every record synthetic — ' +
+      'more than ten thousand generated entities and twenty-five thousand source records across thirty-one simulated ' +
+      'connectors. No live system is contacted, no credentials exist in the codebase, and no real personal, clinical ' +
+      'or personnel data is used anywhere.</div>' +
       '</div><div class="login-right">' +
-      '<div class="pick-label">Organization</div>' +
-      '<div class="seg" style="margin-bottom:14px">' + packs.map((p) =>
-        '<button class="' + (p.id === store.state.packId ? 'on' : '') + '" data-act="pack" data-pack="' + u.at(p.id) + '">' +
+      '<div class="pick-label">Industry</div>' +
+      '<div class="chips" style="margin-bottom:10px">' + packs.map((p) =>
+        '<button class="chip ' + (p.id === store.state.packId ? 'on' : '') + '" data-act="pack" data-pack="' + u.at(p.id) + '">' +
         u.esc(p.label) + '</button>').join('') + '</div>' +
-      '<div class="dim" style="font-size:12px;margin:-6px 0 12px;line-height:1.5">' + u.esc(view.pack.tenantName) + ' — ' +
-      u.esc(view.pack.tagline) + ' Both run on the same engine; only the configuration differs.</div>' +
+      '<div class="dim" style="font-size:12px;margin-bottom:14px;line-height:1.5"><b>' + u.esc(view.pack.tenantName) + '</b> — ' +
+      u.esc(view.pack.tagline) + ' All ' + packs.length + ' run on the same engine; only the configuration differs.</div>' +
       '<div class="pick-label">Sign in as</div>' +
       view.pack.roles.map((r) =>
         '<button class="pick-card" data-act="signin" data-role="' + u.at(r.id) + '">' +
         '<span><span class="pc-name">' + u.esc(r.name) + '</span> <span class="pc-persona">· ' + u.esc(r.persona) + '</span>' +
         '<span class="pc-blurb" style="display:block">' + u.esc(r.blurb) + '</span></span><span class="pc-go">→</span></button>').join('') +
+      '<div class="pick-label" style="margin-top:16px">Kaliris Labs</div>' +
+      '<button class="pick-card" data-act="signin-owner" style="border-color:var(--border-2)">' +
+      '<span><span class="pc-name">Operator console</span> <span class="pc-persona">· platform owner</span>' +
+      '<span class="pc-blurb" style="display:block">Every tenant on the instance, the connectors behind them, the shared model, ' +
+      'the activity log and what is left to build.</span></span><span class="pc-go">→</span></button>' +
       '</div></div>'
     );
   }
@@ -4680,6 +6865,7 @@ input.in::placeholder { color: var(--ink-3); }
       view.pack.roles.map((r) => '<option value="' + u.at(r.id) + '"' + (r.id === view.role.id ? ' selected' : '') + '>' +
         u.esc(r.name) + '</option>').join('') + '</select></div>' +
       (view.persona ? '<a class="btn sm" href="#/e/' + u.at(view.persona.entity.id) + '">' + u.esc(view.persona.name) + '</a>' : '') +
+      '<button class="btn ghost sm" data-act="owner-console" title="Kaliris Labs operator console">Platform</button>' +
       '<button class="btn ghost sm" data-act="signout">Exit</button>' +
       '</div></div>';
   }
@@ -4696,6 +6882,26 @@ input.in::placeholder { color: var(--ink-3); }
           (last ? '' : '<span class="sep">›</span>');
       }).join('') +
       '<button class="btn ghost sm" style="margin-left:auto;flex:none" data-act="clear-trail">Clear</button></div>';
+  }
+
+  function ownerRail(route) {
+    return '<aside class="rail"><div class="rail-head">' + u.wordmark() + '</div><nav class="nav">' +
+      '<div class="nav-label">Platform</div>' +
+      OWNER_NAV.map((it) => '<a href="' + it.href + '" class="' + (route.path === it.href.slice(1) ? 'on' : '') + '">' +
+        '<span class="g">' + it.g + '</span>' + u.esc(it.label) + '</a>').join('') +
+      '<div class="nav-label">Tenants</div>' +
+      store.packs.map((p) => '<a href="#" data-act="enter-tenant" data-tenant="' + u.at(p.id) + '">' +
+        '<span class="g">◇</span>' + u.esc(p.tenantName) + '</a>').join('') +
+      '</nav><div class="rail-foot">Kaliris Labs<br>' + store.packs.length + ' tenants on this instance</div></aside>';
+  }
+
+  function ownerTop() {
+    return '<div class="top">' +
+      '<span class="tag solid">Operator console</span>' +
+      '<span class="dim" style="font-size:12px">owner@kalirislabs.example</span>' +
+      '<div class="right">' +
+      '<button class="btn sm" data-act="enter-tenant" data-tenant="' + u.at(store.state.packId) + '">Enter a tenant</button>' +
+      '<button class="btn ghost sm" data-act="signout">Exit</button></div></div>';
   }
 
   function palette(view) {
@@ -4744,6 +6950,33 @@ input.in::placeholder { color: var(--ink-3); }
     const root = document.getElementById('app');
 
     if (!store.state.signedIn) { root.innerHTML = login(); return; }
+
+    if (store.state.owner) {
+      // Six tenants are resolved from scratch the first time this opens.
+      // Paint the shell first so the console never looks frozen.
+      if (!store.platformReady()) {
+        root.innerHTML = '<div class="shell">' + ownerRail(route) +
+          '<main class="main">' + ownerTop() + '<div class="content">' +
+          '<div class="head"><div><h1>Operator console</h1>' +
+          '<div class="sub">Resolving every tenant on the instance — identities, assertions, policy and graph, from source records.</div>' +
+          '</div></div><div class="card"><div class="card-b"><div class="empty">Working…</div></div></div>' +
+          '</div></main></div>';
+        setTimeout(() => { store.platform(); render(); }, 20);
+        return;
+      }
+      const octx = { view, store, state, route };
+      const which = route.parts[1] || 'tenants';
+      const body =
+        which === 'connectors' ? SOT.owner.connectors(octx) :
+        which === 'model' ? SOT.owner.model(octx) :
+        which === 'access' ? SOT.owner.access(octx) :
+        which === 'audit' ? SOT.owner.audit(octx) :
+        which === 'roadmap' ? SOT.owner.roadmap(octx) :
+        SOT.owner.tenants(octx);
+      root.innerHTML = '<div class="shell">' + ownerRail(route) +
+        '<main class="main">' + ownerTop() + '<div class="content">' + body + '</div></main></div>';
+      return;
+    }
     if (route.parts[0] === 'e' && route.parts[1]) pushTrail(route.parts[1]);
     if (route.parts[0] === 'me' && view.persona) { location.hash = '#/e/' + view.persona.entity.id; return; }
 
@@ -4798,6 +7031,17 @@ input.in::placeholder { color: var(--ink-3); }
       switch (act) {
         case 'pack': store.setPack(d('pack')); render(); return;
         case 'pack-sel': return;
+        case 'signin-owner': store.signInOwner(); location.hash = '#/owner/tenants'; render(); return;
+        case 'owner-tenant': state.ownerTenant = d('tenant'); render(); return;
+        case 'enter-tenant': {
+          e.preventDefault();
+          store.setPack(d('tenant'));
+          state.trail = [];
+          const to = d('to') || store.view.pack.roles[0].landing || '#/dashboard';
+          location.hash = to;
+          render(); return;
+        }
+        case 'owner-console': store.signInOwner(); location.hash = '#/owner/tenants'; render(); return;
         case 'signin': {
           store.signIn(d('role'));
           state.trail = [];

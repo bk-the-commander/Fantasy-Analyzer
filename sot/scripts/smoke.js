@@ -37,8 +37,10 @@ const shot = (page, name) => (wantShots ? page.screenshot({ path: path.join(SHOT
 
   await page.goto('file://' + BUNDLE);
   await page.waitForSelector('.login', { timeout: 8000 });
-  check('login renders both verticals', (await page.locator('.seg button').count()) === 2);
-  check('role cards render', (await page.locator('.pick-card').count()) === 5);
+  check('login offers every industry', (await page.locator('.login .chip').count()) === 6);
+  check('login offers roles and the operator console',
+    (await page.locator('.pick-card').count()) === 6 &&
+    (await page.locator('[data-act="signin-owner"]').count()) === 1);
   await shot(page, 'login');
 
   // Sign in as the executive: whole-organisation scope.
@@ -109,7 +111,8 @@ const shot = (page, name) => (wantShots ? page.screenshot({ path: path.join(SHOT
   await page.waitForTimeout(250);
   check('patient visit history renders', (await page.locator('.content .tev').count()) > 0);
   await shot(page, 'entity-patient');
-  await page.locator('.content .tev').first().click();
+  // A patient's timeline mixes visits with relationship changes; follow a visit.
+  await page.locator('.content .tev[data-go^="#/e/ENC"]').first().click();
   await page.waitForTimeout(300);
   check('drilled into a visit', (await page.locator('.content .tag').first().innerText()).toLowerCase().includes('visit'));
   await page.locator('.tabs button', { hasText: 'Connections' }).click();
@@ -191,19 +194,71 @@ const shot = (page, name) => (wantShots ? page.screenshot({ path: path.join(SHOT
   check('executive sees the patient but not the clinical detail',
     (await page.locator('.content').innerText()).includes('restricted'));
 
-  /* -------------------------------------------------------- second pack --- */
-  await page.selectOption('select[data-act="pack-sel"]', 'defense');
-  await page.waitForTimeout(700);
-  check('second vertical loads on the same engine', (await h1()).includes('Meridian'));
-  await hash('#/t/member');
-  check('defence personnel browse', (await page.locator('.content tbody tr').count()) > 0);
-  await page.locator('.content tbody tr').first().click();
-  await page.waitForTimeout(350);
-  check('defence record renders with its own statistics', (await page.locator('.content .stat').count()) > 2);
-  await shot(page, 'defense');
-  await hash('#/integrity');
-  check('defence findings render', (await page.locator('.content tbody tr').count()) > 0);
-  await page.selectOption('select[data-act="pack-sel"]', 'health');
+  /* ------------------------------------------------- every industry ------
+   * The same walk in each vertical: it must load, browse each of its own
+   * entity types, open a record, render statistics and show findings — with
+   * no engine change between them.
+   */
+  const packIds = await page.evaluate(() => window.SOT.app.store.packs.map((p) => p.id));
+  check('six industries are registered', packIds.length === 6, packIds.join(','));
+
+  for (const pid of packIds) {
+    await page.evaluate((id) => { window.SOT.app.store.setPack(id); window.SOT.app.render(); }, pid);
+    await page.waitForTimeout(500);
+    await hash('#/dashboard');
+    const tenant = await h1();
+    check(pid + ': dashboard loads', tenant.length > 3, tenant);
+
+    const types = await page.evaluate(() => window.SOT.app.store.view.pack.entityTypes.map((t) => t.id));
+    let opened = 0;
+    for (const ty of types) {
+      await hash('#/t/' + ty);
+      const rows = await page.locator('.content tbody tr').count();
+      check(pid + ': browse ' + ty, rows > 0, rows + ' rows');
+      if (rows > 0 && opened < 2) {
+        await page.locator('.content tbody tr').first().click();
+        await page.waitForTimeout(280);
+        const stats = await page.locator('.content .stat').count();
+        const tabs = await page.locator('.tabs button').count();
+        check(pid + ': ' + ty + ' record opens with statistics', stats > 0 && tabs >= 5, 'stats=' + stats + ' tabs=' + tabs);
+        await page.locator('.tabs button', { hasText: 'Connections' }).click();
+        await page.waitForTimeout(220);
+        check(pid + ': ' + ty + ' has connections', (await page.locator('.content .card-h h3').count()) > 0);
+        opened++;
+      }
+    }
+    await hash('#/integrity');
+    check(pid + ': findings render', (await page.locator('.content tbody tr').count()) > 0);
+    await hash('#/identity');
+    check(pid + ': identity queue renders', (await page.locator('.content .stat').count()) > 3);
+    await hash('#/admin');
+    check(pid + ': policy admin renders', (await page.locator('.content tbody tr').count()) > 0);
+    if (wantShots && (pid === 'salon' || pid === 'freight')) {
+      await hash('#/dashboard');
+      await shot(page, 'tenant-' + pid);
+    }
+  }
+
+  /* --------------------------------------------------- operator console --- */
+  await page.evaluate(() => { window.SOT.app.store.setPack('health'); window.SOT.app.store.signInOwner(); location.hash = '#/owner/tenants'; window.SOT.app.render(); });
+  await page.waitForTimeout(3500);
+  check('operator console lists every tenant', (await page.locator('.content tbody tr').count()) >= 6);
+  check('operator console totals render', (await page.locator('.content .stat').count()) >= 5);
+  await shot(page, 'owner-tenants');
+  for (const [h, title] of [['#/owner/connectors', 'Connectors'], ['#/owner/model', 'Model'],
+    ['#/owner/access', 'Access'], ['#/owner/audit', 'Activity'], ['#/owner/roadmap', 'Roadmap']]) {
+    await hash(h);
+    check('operator ' + h, (await h1()).includes(title) && (await page.locator('.content tbody tr').count()) > 0);
+    if (wantShots) await shot(page, 'owner-' + title.toLowerCase());
+  }
+  await hash('#/owner/connectors');
+  check('degraded connectors are surfaced', (await page.locator('.content .tag.critical').count()) > 0);
+  await hash('#/owner/tenants');
+  await page.locator('button[data-act="enter-tenant"]').first().click();
+  await page.waitForTimeout(800);
+  check('operator can drop into a tenant', (await page.locator('.rail .nav a').count()) > 6 &&
+    (await page.locator('button[data-act="owner-console"]').count()) > 0);
+  await page.evaluate(() => { window.SOT.app.store.setPack('health'); window.SOT.app.store.signIn('exec'); location.hash = '#/dashboard'; window.SOT.app.render(); });
   await page.waitForTimeout(600);
 
   /* ----------------------------------------------------- theme + layout --- */

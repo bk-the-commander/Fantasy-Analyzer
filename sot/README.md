@@ -104,22 +104,58 @@ automatically; name-and-date-of-birth or name-and-unit go to a human queue; name
 match. The seeded data deliberately contains all of these, because a visible queue of uncertain
 matches is a better product than a silent one that invented facts.
 
-## Two verticals, one engine
+## Six industries, one engine
 
 The engine knows nothing about hospitals. Everything domain-specific lives in a **vertical pack**
 that declares systems, entity types, relationship types, fields, policy, roles and statistics.
+Six ship in the box:
 
-| | **Health system** | **Defence command** |
-|---|---|---|
-| Tenant | St. Aldwyn Health | Joint Task Force Meridian |
-| Entities | staff, patients, units, facilities, visits | personnel, units, installations, readiness events |
-| Systems | Epic, Workday, UKG, symplr, Waystar, Lenel | Personnel, Training, Medical readiness, Clearance, Installation access |
-| Signature question | *Who was the nurse on that visit, and is their licence current?* | *Who was in that platoon in March, and is their clearance current?* |
+| Tenant | Industry | People / places / events | Signature question |
+|---|---|---|---|
+| St. Aldwyn Health | Healthcare | staff · patients · units · facilities · visits | *Who was the nurse on that visit, and is their licence current?* |
+| Joint Task Force Meridian | Public sector & defence | personnel · units · installations · readiness events | *Who was in that platoon in March, and is their clearance current?* |
+| Vestry & Bloom | Personal services | team · guests · departments · locations · appointments | *Who cut this guest's hair last time, and were they licensed that day?* |
+| Thornfield University | Higher education | faculty · students · departments · campuses · enrolments | *Who taught this section, and do the bursar and the registrar agree on the credits?* |
+| Halyard Wealth Partners | Financial services | advisers · households · desks · offices · reviews | *Who advised this household before the current adviser, and was their registration live?* |
+| Cardinal Freightways | Transportation | drivers · shippers · fleets · terminals · loads | *Who ran this load, and do dispatch, the ELD and the invoice agree on the miles?* |
 
 Switch between them in the header. Identity resolution, conflict classification, the graph, the
-statistics runner and the entire interface are byte-for-byte the same. The same architecture
-serves a sales organization (people, territories, accounts), a police force, a university, or a
-chain of salons — the pack is the difference.
+statistics runner and the entire interface are byte-for-byte the same.
+
+### Adding an industry is a declaration
+
+Two packs are hand-written (`packs/health.js`, `packs/defense.js`). The other four are declared
+against a toolkit (`packs/kit.js`) that supplies a deliberately small skeleton:
+
+```
+site     somewhere work happens        hospital · campus · branch · terminal · salon
+group    a team inside a site          ward · department · desk · fleet · chair row
+worker   someone who does the work     nurse · lecturer · adviser · driver · stylist
+client   someone the work is done for  patient · student · household · shipper · guest
+event    a dated thing joining them    visit · enrolment · review · load · appointment
+```
+
+A pack supplies the vocabulary, the systems, a field map per system, the policy, the roles, how
+much data to generate and which of the standard failure modes to inject — a lapsed credential, a
+leaver with live access, a transfer the slow connector hasn't seen, a duplicate record, a billing
+figure that disagrees with what was delivered. The kit produces source records, adapters,
+time-bounded edges and statistics. Nothing downstream can tell a declared pack from a
+hand-written one, which is the point.
+
+A police force, a construction firm, a home-care agency or a law practice are the same shape.
+
+## Operator console
+
+Sign in as **Kaliris Labs** rather than into a tenant and you get the platform view:
+
+| Page | What it shows |
+|---|---|
+| **Tenants** | Every organization on the instance — entities, records, connectors, findings, alignment. Click into any of them. |
+| **Connectors** | All 31 integrations across all tenants, worst first, with the notices explaining each degraded one. |
+| **Model** | What a chosen tenant declares: entity types, relationship types, the full field catalog, and the shared matching rules. |
+| **Access** | Operator accounts, and every tenant role with its scope and maximum sensitivity. |
+| **Activity** | Policy edits, identity decisions and remediation calls — the actions that change what the platform reports as true. |
+| **Roadmap** | What is left to build, in dependency order, including the decisions that are yours rather than engineering's. |
 
 ## Roles are scopes, not menus
 
@@ -147,6 +183,7 @@ role a maximum. An executive can count patients without seeing a diagnosis.
 | **Remediation** | Each actionable finding as an instruction with a named owner |
 | **Systems** | Connector health and how an integration plugs in |
 | **Admin** | Policy with a live impact preview, the model itself, roles and sensitivity |
+| **Operator console** | The platform view across every tenant, plus the build roadmap |
 
 Two things worth doing in a demo:
 
@@ -178,17 +215,28 @@ src/core/            the engine — no DOM, no framework, runs in Node
   stats.js           per-entity-type statistics computed from the graph
   tasks.js           remediation items with owners
   store.js           mutable state; re-runs the pipeline on any change
-  packs/health.js    the hospital: systems, entities, edges, fields, roles, seed
-  packs/defense.js   the command: same shape, different world
+  packs/kit.js       vertical toolkit — turns a declaration into a whole world
+  packs/health.js    the hospital, hand-written
+  packs/defense.js   the command, hand-written
+  packs/verticals.js salon, university, wealth manager and freight carrier, declared
 src/ui/              presentation — plain functions returning HTML strings
+  views.js           dashboard, browser, and the universal entity page
+  views-admin.js     integrity, identity, systems, remediation, admin
+  views-owner.js     the operator console and the roadmap
 scripts/             build, headless engine check, browser smoke test
 brand/               the mark and the lockup
 ```
 
 `src/core` has no browser dependency — `engine_check.js` runs the whole pipeline in Node and
-asserts its output. That is the part that becomes the product.
+asserts its output for **every** vertical: that each entity type resolves, no edge dangles, every
+field is reachable, findings of all three kinds appear, history is queryable, and every role
+produces a coherent non-empty scope. `smoke.js` then drives the built bundle through 128 checks
+in a real browser, including the full drill-through path and every screen of every tenant.
 
 ## Turning this into a real product
+
+The same list is in the app under **Operator console → Roadmap**, with the reasoning for each
+item and the decisions that are yours rather than engineering's.
 
 1. **Wrap the UI in Next.js + TypeScript.** The view functions become components with the same
    signatures; `src/core` moves into a package essentially unchanged.
@@ -206,11 +254,22 @@ asserts its output. That is the part that becomes the product.
 
 ## Data
 
-Entirely synthetic and generated deterministically from a fixed seed. The health pack builds ~716
-entities from ~1,940 source records across six simulated connectors; the defence pack ~1,570
-entities from ~2,750. **No live system is contacted, no credentials exist anywhere in the
-codebase, and no real personal, clinical or personnel data is used.** All names, identifiers,
-diagnoses and readiness data are fabricated.
+Entirely synthetic and generated deterministically from fixed seeds. Across the six tenants:
+**9,117 resolved entities, 21,900 source records, 29,663 time-bounded relationships and 31
+simulated connectors.**
+
+| Tenant | Entities | Records | Edges | Findings | Identity queue |
+|---|---|---|---|---|---|
+| St. Aldwyn Health | 716 | 1,942 | 3,046 | 39 | 10 |
+| Joint Task Force Meridian | 1,704 | 2,982 | 3,080 | 18 | 6 |
+| Vestry & Bloom | 1,604 | 3,344 | 5,598 | 36 | 11 |
+| Thornfield University | 1,554 | 4,754 | 5,307 | 40 | 14 |
+| Halyard Wealth Partners | 1,741 | 3,609 | 6,097 | 42 | 11 |
+| Cardinal Freightways | 1,798 | 5,269 | 6,535 | 35 | 14 |
+
+**No live system is contacted, no credentials exist anywhere in the codebase, and no real
+personal, clinical, financial or personnel data is used.** All names, identifiers, diagnoses,
+account numbers and readiness data are fabricated.
 
 The disagreements are deliberate and documented in each pack: a lapsed licence still on the
 schedule, terminated workers with live chart access and active badges, a ward transfer four days

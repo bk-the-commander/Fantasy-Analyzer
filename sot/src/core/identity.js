@@ -110,6 +110,17 @@
       (clusters[root] || (clusters[root] = [])).push(e);
     });
 
+    // Index the applied links by record key. Scanning the whole edge list for
+    // every record is quadratic, and was by a wide margin the slowest step in
+    // the pipeline on a large tenant.
+    const strongByKey = new Map();
+    strong.forEach((e) => {
+      if (!strongByKey.has(e.a)) strongByKey.set(e.a, []);
+      if (!strongByKey.has(e.b)) strongByKey.set(e.b, []);
+      strongByKey.get(e.a).push(e);
+      strongByKey.get(e.b).push(e);
+    });
+
     const entities = [];
     const unresolved = [];
     const entityByRecordKey = {};

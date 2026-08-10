@@ -24,7 +24,17 @@
     palQ: '',
     palSel: 0,
     trail: [],
+    ownerTenant: null,
   };
+
+  const OWNER_NAV = [
+    { href: '#/owner/tenants', label: 'Tenants', g: '▦' },
+    { href: '#/owner/connectors', label: 'Connectors', g: '⧉' },
+    { href: '#/owner/model', label: 'Model', g: '◈' },
+    { href: '#/owner/access', label: 'Access', g: '⚯' },
+    { href: '#/owner/audit', label: 'Activity', g: '✓' },
+    { href: '#/owner/roadmap', label: 'Roadmap', g: '→' },
+  ];
 
   function parseRoute() {
     const raw = (location.hash || '#/dashboard').slice(1);
@@ -50,23 +60,27 @@
       '<p>Your systems each hold a fragment — who they are, where they sit, who they report to, who they treated, ' +
       'which territory they carry. SOT resolves one identity per person, per place, per event, and lets you follow ' +
       'the thread from any one of them to all the others.</p></div>' +
-      '<div class="fine"><b>Prototype.</b> Every record is synthetic — ' +
-      view.identity.stats.entities.toLocaleString('en-US') + ' generated entities and ' +
-      view.identity.stats.sourceRecords.toLocaleString('en-US') + ' source records across ' + view.pack.systems.length +
-      ' simulated connectors. No live system is contacted, no credentials exist in the codebase, and no real personal, ' +
-      'clinical or personnel data is used anywhere.</div>' +
+      '<div class="fine"><b>Prototype.</b> Six organizations across six industries, every record synthetic — ' +
+      'more than ten thousand generated entities and twenty-five thousand source records across thirty-one simulated ' +
+      'connectors. No live system is contacted, no credentials exist in the codebase, and no real personal, clinical ' +
+      'or personnel data is used anywhere.</div>' +
       '</div><div class="login-right">' +
-      '<div class="pick-label">Organization</div>' +
-      '<div class="seg" style="margin-bottom:14px">' + packs.map((p) =>
-        '<button class="' + (p.id === store.state.packId ? 'on' : '') + '" data-act="pack" data-pack="' + u.at(p.id) + '">' +
+      '<div class="pick-label">Industry</div>' +
+      '<div class="chips" style="margin-bottom:10px">' + packs.map((p) =>
+        '<button class="chip ' + (p.id === store.state.packId ? 'on' : '') + '" data-act="pack" data-pack="' + u.at(p.id) + '">' +
         u.esc(p.label) + '</button>').join('') + '</div>' +
-      '<div class="dim" style="font-size:12px;margin:-6px 0 12px;line-height:1.5">' + u.esc(view.pack.tenantName) + ' — ' +
-      u.esc(view.pack.tagline) + ' Both run on the same engine; only the configuration differs.</div>' +
+      '<div class="dim" style="font-size:12px;margin-bottom:14px;line-height:1.5"><b>' + u.esc(view.pack.tenantName) + '</b> — ' +
+      u.esc(view.pack.tagline) + ' All ' + packs.length + ' run on the same engine; only the configuration differs.</div>' +
       '<div class="pick-label">Sign in as</div>' +
       view.pack.roles.map((r) =>
         '<button class="pick-card" data-act="signin" data-role="' + u.at(r.id) + '">' +
         '<span><span class="pc-name">' + u.esc(r.name) + '</span> <span class="pc-persona">· ' + u.esc(r.persona) + '</span>' +
         '<span class="pc-blurb" style="display:block">' + u.esc(r.blurb) + '</span></span><span class="pc-go">→</span></button>').join('') +
+      '<div class="pick-label" style="margin-top:16px">Kaliris Labs</div>' +
+      '<button class="pick-card" data-act="signin-owner" style="border-color:var(--border-2)">' +
+      '<span><span class="pc-name">Operator console</span> <span class="pc-persona">· platform owner</span>' +
+      '<span class="pc-blurb" style="display:block">Every tenant on the instance, the connectors behind them, the shared model, ' +
+      'the activity log and what is left to build.</span></span><span class="pc-go">→</span></button>' +
       '</div></div>'
     );
   }
@@ -115,6 +129,7 @@
       view.pack.roles.map((r) => '<option value="' + u.at(r.id) + '"' + (r.id === view.role.id ? ' selected' : '') + '>' +
         u.esc(r.name) + '</option>').join('') + '</select></div>' +
       (view.persona ? '<a class="btn sm" href="#/e/' + u.at(view.persona.entity.id) + '">' + u.esc(view.persona.name) + '</a>' : '') +
+      '<button class="btn ghost sm" data-act="owner-console" title="Kaliris Labs operator console">Platform</button>' +
       '<button class="btn ghost sm" data-act="signout">Exit</button>' +
       '</div></div>';
   }
@@ -131,6 +146,26 @@
           (last ? '' : '<span class="sep">›</span>');
       }).join('') +
       '<button class="btn ghost sm" style="margin-left:auto;flex:none" data-act="clear-trail">Clear</button></div>';
+  }
+
+  function ownerRail(route) {
+    return '<aside class="rail"><div class="rail-head">' + u.wordmark() + '</div><nav class="nav">' +
+      '<div class="nav-label">Platform</div>' +
+      OWNER_NAV.map((it) => '<a href="' + it.href + '" class="' + (route.path === it.href.slice(1) ? 'on' : '') + '">' +
+        '<span class="g">' + it.g + '</span>' + u.esc(it.label) + '</a>').join('') +
+      '<div class="nav-label">Tenants</div>' +
+      store.packs.map((p) => '<a href="#" data-act="enter-tenant" data-tenant="' + u.at(p.id) + '">' +
+        '<span class="g">◇</span>' + u.esc(p.tenantName) + '</a>').join('') +
+      '</nav><div class="rail-foot">Kaliris Labs<br>' + store.packs.length + ' tenants on this instance</div></aside>';
+  }
+
+  function ownerTop() {
+    return '<div class="top">' +
+      '<span class="tag solid">Operator console</span>' +
+      '<span class="dim" style="font-size:12px">owner@kalirislabs.example</span>' +
+      '<div class="right">' +
+      '<button class="btn sm" data-act="enter-tenant" data-tenant="' + u.at(store.state.packId) + '">Enter a tenant</button>' +
+      '<button class="btn ghost sm" data-act="signout">Exit</button></div></div>';
   }
 
   function palette(view) {
@@ -179,6 +214,33 @@
     const root = document.getElementById('app');
 
     if (!store.state.signedIn) { root.innerHTML = login(); return; }
+
+    if (store.state.owner) {
+      // Six tenants are resolved from scratch the first time this opens.
+      // Paint the shell first so the console never looks frozen.
+      if (!store.platformReady()) {
+        root.innerHTML = '<div class="shell">' + ownerRail(route) +
+          '<main class="main">' + ownerTop() + '<div class="content">' +
+          '<div class="head"><div><h1>Operator console</h1>' +
+          '<div class="sub">Resolving every tenant on the instance — identities, assertions, policy and graph, from source records.</div>' +
+          '</div></div><div class="card"><div class="card-b"><div class="empty">Working…</div></div></div>' +
+          '</div></main></div>';
+        setTimeout(() => { store.platform(); render(); }, 20);
+        return;
+      }
+      const octx = { view, store, state, route };
+      const which = route.parts[1] || 'tenants';
+      const body =
+        which === 'connectors' ? SOT.owner.connectors(octx) :
+        which === 'model' ? SOT.owner.model(octx) :
+        which === 'access' ? SOT.owner.access(octx) :
+        which === 'audit' ? SOT.owner.audit(octx) :
+        which === 'roadmap' ? SOT.owner.roadmap(octx) :
+        SOT.owner.tenants(octx);
+      root.innerHTML = '<div class="shell">' + ownerRail(route) +
+        '<main class="main">' + ownerTop() + '<div class="content">' + body + '</div></main></div>';
+      return;
+    }
     if (route.parts[0] === 'e' && route.parts[1]) pushTrail(route.parts[1]);
     if (route.parts[0] === 'me' && view.persona) { location.hash = '#/e/' + view.persona.entity.id; return; }
 
@@ -233,6 +295,17 @@
       switch (act) {
         case 'pack': store.setPack(d('pack')); render(); return;
         case 'pack-sel': return;
+        case 'signin-owner': store.signInOwner(); location.hash = '#/owner/tenants'; render(); return;
+        case 'owner-tenant': state.ownerTenant = d('tenant'); render(); return;
+        case 'enter-tenant': {
+          e.preventDefault();
+          store.setPack(d('tenant'));
+          state.trail = [];
+          const to = d('to') || store.view.pack.roles[0].landing || '#/dashboard';
+          location.hash = to;
+          render(); return;
+        }
+        case 'owner-console': store.signInOwner(); location.hash = '#/owner/tenants'; render(); return;
         case 'signin': {
           store.signIn(d('role'));
           state.trail = [];

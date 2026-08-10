@@ -274,8 +274,8 @@
   function describeScope(role, typeId) {
     const rule = (role.scopes || {})[typeId];
     if (rule === 'none') return 'no records of this kind at all';
-    if (rule === 'unit') return 'only records attached to their own unit';
-    if (rule === 'care') return 'only records for people in their care';
+    if (rule === 'unit' || rule === 'group') return 'only records attached to their own group';
+    if (rule === 'care' || rule === 'book') return 'only records they personally handle';
     return 'everything';
   }
 

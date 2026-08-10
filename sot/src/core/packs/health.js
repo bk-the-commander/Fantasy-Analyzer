@@ -857,6 +857,7 @@
   SOT.packs.health = {
     id: 'health',
     label: 'Health system',
+    industry: 'Healthcare',
     tenantName: 'St. Aldwyn Health',
     tagline: 'Three hospitals, six systems, one record of who is who.',
     systems: SYSTEMS,
@@ -870,6 +871,13 @@
     adapters: ADAPTERS,
     build,
     searchTypes: ['staff', 'patient', 'unit', 'facility', 'encounter'],
+    personaRules: {
+      physician: /Hospitalist|Attending Physician/,
+      nurse_manager: /Nurse Manager/,
+      exec: /Chief Operating Officer/,
+      workforce: /Workforce Systems/,
+      compliance: /Identity Governance/,
+    },
     // A code in one record is a pointer to another entity. Declaring it here
     // turns "IMG" into a link to Imaging & Radiology everywhere it appears.
     codeRefs: { homeUnit: ['unit', 'unitCode'], facilityCode: ['facility', 'facilityCode'] },

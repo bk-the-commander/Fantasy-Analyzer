@@ -516,6 +516,7 @@
   SOT.packs.defense = {
     id: 'defense',
     label: 'Defence command',
+    industry: 'Public sector & defence',
     tenantName: 'Joint Task Force Meridian',
     tagline: 'One battalion, five systems, one answer about who is ready.',
     systems: SYSTEMS,
@@ -529,6 +530,13 @@
     adapters: ADAPTERS,
     build,
     searchTypes: ['member', 'unit', 'installation', 'event'],
+    // Personnel are described by rank rather than a job title.
+    personaRules: {
+      commander: { field: 'rank', match: '^LTC$' },
+      company: { field: 'rank', match: '^CPT$' },
+      s1: { field: 'rank', match: '^LTC$' },
+      security: { field: 'rank', match: '^LTC$' },
+    },
     codeRefs: { unitCode: ['unit', 'uic'], installationCode: ['installation', 'installationCode'] },
   };
 })(window.SOT || (window.SOT = {}));

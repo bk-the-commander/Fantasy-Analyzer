@@ -57,6 +57,15 @@
       case 'daysAgo': return s.value + 'd';
       case 'years': return s.value + ' yr';
       case 'ratio': return s.value + '×';
+      case 'money': {
+        const v = Math.abs(s.value);
+        if (v >= 1e9) return '$' + (v / 1e9).toFixed(1) + 'bn';
+        if (v >= 1e6) return '$' + (v / 1e6).toFixed(v >= 1e7 ? 0 : 1) + 'm';
+        if (v >= 1e3) return '$' + Math.round(v / 1e3) + 'k';
+        return '$' + Math.round(v);
+      }
+      case 'miles': return Math.round(s.value).toLocaleString('en-US') + ' mi';
+      case 'hours': return s.value + ' h';
       case 'date': return date(s.value);
       default: return typeof s.value === 'number' ? s.value.toLocaleString('en-US') : String(s.value);
     }

@@ -13,7 +13,7 @@ const vm = require('vm');
 const ROOT = path.join(__dirname, '..', 'src', 'core');
 const FILES = [
   'schema.js', 'graph.js', 'identity.js', 'resolve.js', 'stats.js', 'tasks.js',
-  'packs/common.js', 'packs/health.js', 'packs/defense.js', 'store.js',
+  'packs/common.js', 'packs/kit.js', 'packs/health.js', 'packs/defense.js', 'packs/verticals.js', 'store.js',
 ];
 
 const sandbox = { window: { localStorage: { getItem: () => null, setItem: () => {} } }, console };
@@ -166,6 +166,69 @@ check('nurse manager sees a subset of staff', (() => {
   return n > 0 && n < all;
 })());
 check('policy change moves resolved answers', moved > 0, moved + ' staff');
+
+/* ------------------------------------------------------ every pack, swept
+ *
+ * The same invariants have to hold in every industry, or "works for any
+ * industry" is marketing rather than architecture.
+ */
+console.log('\n=== all verticals ===');
+const table = [];
+store.packs.forEach((meta) => {
+  store.setPack(meta.id);
+  const p = store.view.pack;
+  store.signIn(p.roles[0].id);
+  const view = store.view;
+  const tag = meta.id.padEnd(9);
+
+  table.push({
+    pack: meta.id,
+    entities: view.identity.stats.entities,
+    records: view.identity.stats.sourceRecords,
+    edges: view.graph.edges.length,
+    findings: view.conflicts.length,
+    queue: view.identity.stats.needsReview,
+    align: view.summary.alignment + '%',
+  });
+
+  check(tag + 'every entity type resolves', p.entityTypes.every((t) => view.identity.stats.byType[t.id] > 0),
+    JSON.stringify(view.identity.stats.byType));
+  check(tag + 'no dangling edges', view.graph.dangling.length === 0, view.graph.dangling.length + ' dropped');
+  check(tag + 'every entity has a name', Object.values(view.profiles).every((x) => !!x.name));
+  check(tag + 'every entity type has statistics', p.entityTypes.every((t) => {
+    const one = Object.values(view.profiles).find((x) => x.type === t.id);
+    return one && store.statsFor(one.entity.id).length > 0;
+  }));
+  check(tag + 'findings of every kind', view.summary.byKind.divergence > 0 && view.summary.byKind.lag > 0,
+    JSON.stringify(view.summary.byKind));
+  check(tag + 'identity queue populated', view.identity.stats.needsReview > 0);
+  check(tag + 'history is queryable', view.graph.edges.some((e) => e.temporal !== false && e.toTs !== null));
+  check(tag + 'policy covers every field', p.fields.every((f) => (view.policy[f.key] || []).length > 0));
+  check(tag + 'every field resolves for someone', p.fields.every((f) =>
+    Object.values(view.profiles).some((x) => x.type === f.entity && x.fields[f.key] && !x.fields[f.key].absent)));
+  check(tag + 'remediation has owners', view.tasks.every((t) => !!t.owner && !!t.title));
+  check(tag + 'search index covers every type', p.entityTypes.every((t) => view.searchIndex.some((r) => r.type === t.id)));
+
+  // Every role must produce a coherent scope: either everything, or a
+  // non-empty subset anchored on a real person.
+  p.roles.forEach((r) => {
+    store.setRole(r.id);
+    const vv = store.view;
+    const restricted = Object.keys(vv.scope.allowed).filter((k) => vv.scope.allowed[k] instanceof Set);
+    const needsPersona = restricted.some((k) => (r.scopes || {})[k] !== 'none');
+    check(tag + 'role ' + r.id + ' resolves', !needsPersona || !!vv.persona,
+      needsPersona && !vv.persona ? 'no persona matched personaRules' : '');
+    const empties = restricted.filter((k) => (r.scopes || {})[k] !== 'none' && vv.scope.allowed[k].size === 0);
+    check(tag + 'role ' + r.id + ' scope not empty', empties.length === 0, empties.join(','));
+  });
+  store.setRole(p.roles[0].id);
+});
+
+console.log('');
+console.log('  pack      entities  records   edges  findings  queue  align');
+table.forEach((r) => console.log('  ' + r.pack.padEnd(9) +
+  String(r.entities).padStart(8) + String(r.records).padStart(9) + String(r.edges).padStart(8) +
+  String(r.findings).padStart(10) + String(r.queue).padStart(7) + String(r.align).padStart(7)));
 
 console.log('\n' + (failures ? failures + ' FAILURES' : 'all checks passed') + '\n');
 process.exit(failures ? 1 : 0);

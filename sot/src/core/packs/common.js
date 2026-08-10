@@ -25,12 +25,26 @@
   const STREETS = ['Ashgrove Lane','Kestrel Way','Fenwick Road','Bramble Court','Aldwyn Street','Copperline Drive','Marsh Hollow','Yarrow Close','Ridgeway Terrace','Lantern Row','Halstead Avenue','Wexley Green'];
 
   function makeNamer(rand) {
+    const shuffle = (arr) => {
+      const a = arr.slice();
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(rand() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    };
+    // Walk shuffled pools with independent cursors rather than sampling at
+    // random: random sampling clusters, and a demo where four people in a row
+    // share a first name reads as broken data.
+    let firsts = shuffle(FIRST), lasts = shuffle(LAST), fi = 0, li = 0;
     const used = new Set();
     return function name() {
       let first, last, key, guard = 0;
       do {
-        first = FIRST[Math.floor(rand() * FIRST.length)];
-        last = LAST[Math.floor(rand() * LAST.length)];
+        if (fi >= firsts.length) { firsts = shuffle(FIRST); fi = 0; }
+        if (li >= lasts.length) { lasts = shuffle(LAST); li = 0; }
+        first = firsts[fi++];
+        last = lasts[li++];
         key = first + ' ' + last;
       } while (used.has(key) && guard++ < 400);
       used.add(key);
