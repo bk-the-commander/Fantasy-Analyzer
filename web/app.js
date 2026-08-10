@@ -70,6 +70,12 @@ const SITE = {
     client: '',              // AdSense publisher id, e.g. 'ca-pub-0000000000000000'
     slots: { leaderboard: '', inline: '' },
   },
+  /* Metering is OFF. Nothing about the product is good enough yet to be worth
+   * gating, and a ceiling someone hits on their first visit is a reason to
+   * leave, not a reason to pay. The plan machinery stays wired so it can be
+   * switched on later without rebuilding it: flip `paywall` to true. */
+  paywall: false,
+
   billing: {
     priceMonthly: 4,
     priceYearly: 39,
@@ -142,7 +148,8 @@ const tier = () => {
   try { return localStorage.getItem(TIER_KEY) === 'pro' ? 'pro' : 'free'; }
   catch { return 'free'; }
 };
-const isPro = () => tier() === 'pro';
+/** Everyone gets everything while metering is off. */
+const isPro = () => !SITE.paywall || tier() === 'pro';
 
 function setTier(value) {
   try { localStorage.setItem(TIER_KEY, value); } catch { /* private mode */ }
@@ -233,6 +240,16 @@ function mount(parent, ...children) {
     parent.append(c);
   }
   return parent;
+}
+
+/** replaceChildren(), with the same habit removed. Views are built out of
+ *  conditional pieces -- `capped ? upgradeBar(...) : null` -- and the DOM turns
+ *  a null child into the four-letter word "null" on the page rather than
+ *  dropping it. Every view swaps its contents through here so that a condition
+ *  going false leaves a gap instead of a bug. */
+function swap(parent, ...children) {
+  parent.replaceChildren();
+  mount(parent, ...children);
 }
 
 function el(tag, attrs = {}, ...children) {
@@ -398,9 +415,13 @@ const indexField = (id, field) => {
   return i === undefined ? null : state.index[field][i];
 };
 
+/** Full club name for a code. Only the baseball dataset ships a club register
+ *  -- the football and basketball feeds already carry readable abbreviations --
+ *  so everywhere else this hands back the code unchanged instead of throwing. */
 function teamName(code) {
   if (!code) return '';
-  return code.split('/').map((c) => state.meta.teams[c] || c).join(' / ');
+  const reg = state.meta?.teams;
+  return code.split('/').map((c) => (reg && reg[c]) || c).join(' / ');
 }
 
 /** Percentile (0-100) of `v` against the 101 breakpoints for `group.metric`. */
@@ -481,15 +502,14 @@ const NAV = [
   ] },
   { id: 'league', label: 'My League', icon: '⚙️', open: true, items: [
     ['settings', 'Scoring Settings', '🎛️', false, 'Set your weights — everything recomputes'],
-    ['scoring',  'Current Rules',    '📋', true,  'What the site is scoring with right now'],
   ] },
   { id: 'tools', label: 'Tools', icon: '🧰', open: false, items: [
     ['chat',   'Ask AI',  '💬', true,  'Questions answered from this data'],
     ['trends', 'Trends',  '📊', false, 'Waiver and hot/cold — in development'],
   ] },
-  { id: 'account', label: 'Account', icon: '👋', open: false, items: [
-    ['pricing', 'Plans',   '💳', false, 'Free vs Pro'],
+  { id: 'about', label: 'About', icon: '👋', open: false, items: [
     ['about',   'About',   'ℹ️', false, 'What this is and where the data comes from'],
+    ['scoring', 'Scoring Rules', '📋', true, 'The weights every number here uses'],
     ['contact', 'Contact', '✉️', false, 'Corrections and enquiries'],
   ] },
   { id: 'owner', label: 'Owner', icon: '🔧', open: false, owner: true, items: [
@@ -518,7 +538,7 @@ function buildSidebar() {
   if (!nav) return;
   const open = openGroups();
 
-  nav.replaceChildren(...NAV.map((group) => {
+  swap(nav, ...NAV.map((group) => {
     const list = el('div', { class: 'nav-items', id: `nav-${group.id}` },
       group.items.map(([view, label, icon, scoped, blurb]) =>
         el('a', {
@@ -640,7 +660,7 @@ async function applySport(id) {
 function initSportSwitch() {
   const wrap = $('#sportSwitch');
   if (!wrap) return;
-  wrap.replaceChildren(...SPORT_IDS.map((id) => el('button', {
+  swap(wrap, ...SPORT_IDS.map((id) => el('button', {
     type: 'button', 'data-sport': id,
     class: state.sport === id ? 'on' : '',
     title: `${SPORTS[id].league} — ${SPORTS[id].name}`,
@@ -652,6 +672,8 @@ function initSportSwitch() {
 function updateTierBadge() {
   const badge = $('#tierBadge');
   if (!badge) return;
+  if (!SITE.paywall) { badge.hidden = true; return; }
+  badge.hidden = false;
   const pro = isPro();
   badge.className = `tier-badge${pro ? ' pro' : ''}`;
   badge.textContent = pro ? 'PRO' : 'FREE';
@@ -1091,6 +1113,42 @@ function projectionPanel(p) {
 
 const m2pct = (f) => `${f >= 1 ? '+' : ''}${((f - 1) * 100).toFixed(1)}%`;
 
+/** Where a player played, and when. Consecutive years with the same club are
+ *  collapsed into one stint, which is how anyone would describe a career. */
+function teamHistoryPanel(entries, label = 'Teams') {
+  const stints = [];
+  for (const [year, team] of entries) {
+    const clubs = String(team || '').split('/').filter(Boolean);
+    const key = clubs.join('/') || '—';
+    const last = stints[stints.length - 1];
+    if (last && last.key === key && year === last.to + 1) last.to = year;
+    else stints.push({ key, clubs, from: year, to: year });
+  }
+  if (!stints.length) return null;
+
+  const distinct = new Set(stints.flatMap((s2) => s2.clubs));
+  return el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, label),
+      el('span', { class: 'hint' },
+        `${distinct.size} club${distinct.size === 1 ? '' : 's'} · ` +
+        `${stints.length} stint${stints.length === 1 ? '' : 's'}`)),
+    el('ol', { class: 'stints' },
+      stints.map((s2) => el('li', { class: 'stint' },
+        el('span', { class: 'stint-years' },
+          s2.from === s2.to ? String(s2.from) : `${s2.from}–${s2.to}`),
+        el('span', { class: 'stint-bar' }),
+        // "SFN" tells a Lahman user something and everyone else nothing, so a
+        // single club is spelled out where the dataset knows the name. Split
+        // seasons keep the codes -- "Boston Red Sox / New York Yankees" on one
+        // row is worse than "BOS/NYA" -- and carry the full names on hover.
+        el('span', { class: 'stint-club', title: teamName(s2.key) },
+          s2.clubs.length === 1 ? teamName(s2.key) : s2.key),
+        el('span', { class: 'stint-len' },
+          `${s2.to - s2.from + 1} yr${s2.to === s2.from ? '' : 's'}`)))),
+    watermark());
+}
+
 // --------------------------------------------------------------------- bios
 //
 // Nicknames are not in any public statistical database, so this is a curated
@@ -1366,6 +1424,17 @@ function rail(label, value, percentile, display) {
 }
 
 /** Sortable table. `cols` = [{key, label, fmt, cls, sort}] */
+/* Four-and-five-figure counting stats read as a wall without separators: 12606
+ * plate appearances next to 13,817 points looked like two different kinds of
+ * number. Columns that hold a year are the exception -- 1,986 is not a season.
+ * A column can opt out entirely with `plain: true`. */
+const YEAR_KEYS = new Set(['year', 'year0', 'year1', 'season', 'draft_year']);
+function cellNumber(v, col) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return v;
+  if (col.plain || YEAR_KEYS.has(col.key)) return String(v);
+  return num(v, Number.isInteger(v) ? 0 : 1);
+}
+
 function statTable(rows, cols, opts = {}) {
   let sortKey = opts.sortKey ?? null;
   let asc = opts.asc ?? false;
@@ -1396,7 +1465,8 @@ function statTable(rows, cols, opts = {}) {
     if (opts.rank) tr.append(el('th', {}, '#'));
     cols.forEach((c) => {
       const th = el('th', {
-        class: `sortable${sortKey === c.key ? ' sorted' + (asc ? ' asc' : '') : ''}`,
+        class: `sortable${c.cls === 'txt' ? ' txt' : ''}` +
+               `${sortKey === c.key ? ' sorted' + (asc ? ' asc' : '') : ''}`,
         title: c.title || c.label,
         onclick: () => {
           if (sortKey === c.key) asc = !asc; else { sortKey = c.key; asc = !!c.ascDefault; }
@@ -1415,7 +1485,7 @@ function statTable(rows, cols, opts = {}) {
         tr.append(el('td', { class: `rank-cell${i < 3 ? ' top' : ''}` }, row.__total ? '' : i + 1));
       }
       cols.forEach((c) => {
-        const v = c.get ? c.get(row) : row[c.key];
+        const v = c.get ? c.get(row) : cellNumber(row[c.key], c);
         const td = el('td', { class: c.cls || '' });
         if (v && v.nodeType) td.append(v);
         else td.append(document.createTextNode(v === null || v === undefined ? '—' : String(v)));
@@ -1531,7 +1601,7 @@ function seasonChart(seasons, onPick, selected) {
 async function viewPlayer(key) {
   const id = resolveId(key);
   if (!id) {
-    return app().replaceChildren(el('div', { class: 'view-head' },
+    return swap(app(), el('div', { class: 'view-head' },
       el('h1', {}, 'Player Lookup'),
       el('p', {}, 'Search any of the ' + num(state.meta.players) +
         ' players in major-league history and see their career scored in our league’s points. Press / to jump to the search box.')),
@@ -1543,7 +1613,7 @@ async function viewPlayer(key) {
 
   const p = rescorePlayer(await getShard(id));
   if (!p) {
-    return app().replaceChildren(el('div', { class: 'empty-state' },
+    return swap(app(), el('div', { class: 'empty-state' },
       el('h3', {}, EMBEDDED ? 'Not in this preview' : 'Player not found'),
       el('div', {}, EMBEDDED
         ? `This preview carries full season logs for the ${num(EMBEDDED.playerCount)} ` +
@@ -1602,7 +1672,7 @@ async function viewPlayer(key) {
 
   const card = el('div', { class: 'panel' }, hero, watermark());
   const container = el('div', {}, card);
-  app().replaceChildren(container);
+  swap(app(), container);
 
   // --- tiles + rails ------------------------------------------------------
   const isCareer = scope === 'career';
@@ -1686,6 +1756,12 @@ async function viewPlayer(key) {
     pit.length ? rankMap('lb_career_pitching').then((m) => m.get(id)) : null,
   ]);
   mount(container, bioPanel(p, { batting: batRank, pitching: pitRank }));
+
+  const seasonTeams = new Map();
+  for (const r of bat) seasonTeams.set(r[B.YEAR], r[B.TEAM]);
+  for (const r of pit) if (!seasonTeams.has(r[P.YEAR])) seasonTeams.set(r[P.YEAR], r[P.TEAM]);
+  mount(container, teamHistoryPanel(
+    [...seasonTeams.entries()].sort((a, b) => a[0] - b[0]), 'Team history'));
 
   const metricYear = isCareer ? null : yr;
   const batPanel = () => {
@@ -1957,7 +2033,7 @@ async function viewLeaders(kind) {
     el('div', { class: 'panel-head' }, el('h2', {}, 'Leaderboard'),
       el('span', { class: 'hint' }, 'Click a name for the full player page')),
     filters, body, watermark());
-  app().replaceChildren();
+  swap(app());
   mount(app(), head, panel, adSlot('leaderboard'));
 
   const opts = {
@@ -1987,7 +2063,7 @@ async function viewLeaders(kind) {
 
     const shown = limitRows(filtered, FREE.boardRows);
     const capped = shown.length < filtered.length;
-    body.replaceChildren(
+    swap(body,
       el('div', { class: 'panel-head', style: 'border-top:1px solid var(--line)' },
         el('h2', {}, `${num(filtered.length)} ${isCareer ? 'players' : 'seasons'}`),
         el('span', { class: 'hint' },
@@ -2122,7 +2198,7 @@ async function viewYear(year) {
       .map((y) => el('option', { value: y, selected: y === year }, y)));
 
   const wrap = el('div', {});
-  app().replaceChildren(head,
+  swap(app(), head,
     el('div', { class: 'panel' },
       el('div', { class: 'filters' },
         el('div', { class: 'field' }, el('label', {}, 'Season'), picker)),
@@ -2148,7 +2224,7 @@ async function viewYear(year) {
         : null);
   };
 
-  wrap.replaceChildren(
+  swap(wrap,
     section(`${year} — batting leaders`, bRows, 'batting'),
     section(`${year} — pitching leaders`, pRows, 'pitching'),
     el('div', { class: 'note', html:
@@ -2182,7 +2258,7 @@ async function viewCompare(idsParam) {
     ids.length ? el('button', { class: 'btn', onclick: () => go('#/compare') }, 'Clear all') : null);
 
   const grid = el('div', { class: 'compare-grid' });
-  app().replaceChildren(head, el('div', { class: 'panel' },
+  swap(app(), head, el('div', { class: 'panel' },
     el('div', { class: 'panel-head' }, el('h2', {}, 'Head to head')), adder, grid));
 
   if (!ids.length) {
@@ -2271,7 +2347,7 @@ function viewScoring() {
 
   if (state.sport !== 'mlb') return viewScoringPlaceholder();
 
-  app().replaceChildren(
+  swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, `${sport().league} League Scoring`),
       el('p', {}, `${m.league.size}-team ${m.league.type}, all-baseball keeper league. ` +
@@ -2539,10 +2615,10 @@ async function viewLive() {
     el('div', { class: 'panel-head' }, el('h2', {}, 'Loading current season…'),
       el('span', { class: 'hint' }, 'Fetching from statsapi.mlb.com')),
     el('div', { class: 'empty-state' }, el('div', { class: 'boot-spinner' })));
-  app().replaceChildren(head, body);
+  swap(app(), head, body);
 
   if (!isPro() && !FREE.liveStats) {
-    return app().replaceChildren(head, el('div', { class: 'panel' },
+    return swap(app(), head, el('div', { class: 'panel' },
       el('div', { class: 'panel-head' }, el('h2', {}, 'Current season — Pro')),
       el('div', { class: 'empty-state' },
         el('h3', {}, 'Live stats are a Pro feature'),
@@ -2561,7 +2637,7 @@ async function viewLive() {
         ? `The ${live.season} season has not produced statistics yet.`
         : `The request to the MLB Stats API did not succeed (${live.error}). This can happen ` +
           'offline, behind a restrictive network, or if the API changes shape.';
-    return app().replaceChildren(head, el('div', { class: 'panel' },
+    return swap(app(), head, el('div', { class: 'panel' },
       el('div', { class: 'panel-head' }, el('h2', {}, 'Current season unavailable')),
       el('div', { class: 'empty-state' },
         el('h3', {}, 'No live data right now'),
@@ -2592,7 +2668,7 @@ async function viewLive() {
          { key: 'IP', label: 'IP', get: (r) => ipFrom(r.IP) }, { key: 'SO', label: 'K' },
          { key: 'ERA', label: 'ERA', get: (r) => num(r.ERA, 2), ascDefault: true },
          { key: 'pts', label: 'Points', cls: 'pts-cell', get: (r) => num(r.pts, 0) }];
-    table.replaceChildren(
+    swap(table,
       el('div', { class: 'panel-head', style: 'border-top:1px solid var(--border)' },
         el('h2', {}, `${num(rows.length)} players`),
         el('span', { class: 'hint' }, batting ? 'Batting' : 'Pitching')),
@@ -2612,7 +2688,7 @@ async function viewLive() {
   const missing = ['QS', 'CYCLE', 'GRAND_SLAM', 'NO_HITTER', 'PERFECT_GAME']
     .filter((c) => !live.pitchingCats.includes(c));
 
-  app().replaceChildren(head,
+  swap(app(), head,
     el('div', { class: 'panel live-panel' },
       el('div', { class: 'panel-head' },
         el('h2', {}, el('span', { class: 'live-dot' }), `${live.season} season leaders`),
@@ -2635,7 +2711,7 @@ function viewGenericScoring() {
   const s = sport();
   const m = state.meta;
   const weights = genWeights();
-  return app().replaceChildren(
+  return swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, `${s.league} League Scoring`),
       el('p', {}, `${m.league.size}-team ${m.league.type}. These are the default ` +
@@ -2667,7 +2743,7 @@ function viewGenericScoring() {
 
 function viewScoringPlaceholder() {
   const s = sport();
-  app().replaceChildren(
+  swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, `${s.league} League Scoring`),
       el('p', {}, `${s.league_settings.size}-team ${s.league_settings.type}. ` +
@@ -2713,7 +2789,7 @@ function renderFooter() {
     el('h4', {}, title),
     links.map(([label, href]) => el('a', { href }, label)));
 
-  $('#siteFoot').replaceChildren(el('div', { class: 'foot-inner' },
+  swap($('#siteFoot'), el('div', { class: 'foot-inner' },
     el('div', { class: 'foot-brand', html: 'DYNASTY <em>ANALYTICS</em>' }),
     el('div', { class: 'foot-dynasty' }, `Brought to you by ${SITE.dynasty}`),
 
@@ -2765,7 +2841,7 @@ const ul = (items) => el('ul', {}, items.map((i) => el('li', { html: i })));
 
 function viewAbout() {
   const m = state.meta;
-  app().replaceChildren(
+  swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, `About ${SITE.name}`),
       el('p', {}, SITE.tagline)),
@@ -2868,7 +2944,7 @@ function viewContact() {
                         target: '_blank', rel: 'noopener' }, 'Discord'));
   }
 
-  app().replaceChildren(
+  swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, 'Contact'),
       el('p', {}, 'Corrections, feature requests, league questions, business enquiries.')),
@@ -2950,7 +3026,7 @@ async function viewGenericPlayer(key) {
   const id = resolveId(key);
   if (!id) {
     const s = sport();
-    return app().replaceChildren(
+    return swap(app(),
       el('div', { class: 'view-head' },
         el('h1', {}, `${s.league} Player Lookup`),
         el('p', {}, s.tagline)),
@@ -2964,7 +3040,7 @@ async function viewGenericPlayer(key) {
   const raw = await getShard(id);
   const p = raw && Array.isArray(raw.s) && Array.isArray(raw.yrs) ? raw : null;
   if (!p) {
-    return app().replaceChildren(el('div', { class: 'empty-state' },
+    return swap(app(), el('div', { class: 'empty-state' },
       el('h3', {}, 'Not in this dataset'),
       el('div', {}, `${sport().league} coverage runs ` +
         `${state.meta.seasons[0]}–${state.meta.seasons[1]}. ` +
@@ -2991,7 +3067,7 @@ async function viewGenericPlayer(key) {
 
   const card = el('div', { class: 'panel' }, hero, watermark());
   const container = el('div', {}, card);
-  app().replaceChildren(container);
+  swap(app(), container);
 
   const rank = ranks.get(id);
   const topStats = stats.slice(0, 3);
@@ -3093,16 +3169,8 @@ async function viewGenericPlayer(key) {
     }
   }
 
-  if (p.teams?.length) {
-    container.append(el('div', { class: 'panel' },
-      el('div', { class: 'panel-head' },
-        el('h2', {}, 'Team history'),
-        el('span', { class: 'hint' }, `${p.teams.length} club${p.teams.length === 1 ? '' : 's'}`)),
-      el('div', { class: 'team-track' },
-        rows.map((r) => el('div', { class: 'team-stop' },
-          el('div', { class: 'team-year' }, String(r[GEN.YEAR])),
-          el('div', { class: 'team-code' }, r[GEN.TEAM] || '—'))))));
-  }
+  mount(container, teamHistoryPanel(
+    rows.map((r) => [r[GEN.YEAR], r[GEN.TEAM]]), 'Team history'));
 
   if (p.inj) {
     const inj = p.inj;
@@ -3172,7 +3240,7 @@ async function viewGenericBoard(kind) {
     el('div', { class: 'panel-head' }, el('h2', {}, 'Leaderboard'),
       el('span', { class: 'hint' }, 'Click a name for the full player page')),
     filters, body, watermark());
-  app().replaceChildren(head, panel);
+  swap(app(), head, panel);
 
   const raw = await getBoard(isCareer ? 'lb_career' : 'lb_season');
   const weights = genWeights();
@@ -3213,7 +3281,7 @@ async function viewGenericBoard(kind) {
         heat: (v) => Math.max(0, v / maxPts) },
     ].filter(Boolean);
 
-    body.replaceChildren(
+    swap(body,
       el('div', { class: 'panel-head', style: 'border-top:1px solid var(--border)' },
         el('h2', {}, `${num(filtered.length)} ${isCareer ? 'players' : 'seasons'}`),
         el('span', { class: 'hint' },
@@ -3254,7 +3322,7 @@ async function viewGenericYear(yearArg) {
       .map((y) => el('option', { value: y, selected: y === year }, y)));
 
   const wrap = el('div', {});
-  app().replaceChildren(
+  swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, `${s.league} Year Explorer`),
       el('p', {}, `Any season from ${lo} to ${hi}, scored your way.`)),
@@ -3274,7 +3342,7 @@ async function viewGenericYear(yearArg) {
   const shown = limitRows(rows, FREE.yearRows);
   const maxPts = Math.max(...shown.map((r) => r.pts), 1);
 
-  wrap.replaceChildren(
+  swap(wrap,
     el('div', { class: 'panel-head', style: 'border-top:1px solid var(--border)' },
       el('h2', {}, `${year} leaders`),
       el('span', { class: 'hint' }, `${num(rows.length)} qualifying players`)),
@@ -3302,13 +3370,13 @@ function viewGenericSettings() {
   const preview = el('div', { class: 'settings-preview' });
 
   const refresh = async () => {
-    preview.replaceChildren(el('div', { class: 'boot-spinner' }));
+    swap(preview, el('div', { class: 'boot-spinner' }));
     const rows = await getBoard('lb_career');
     const top = rows.map((r) => ({
       name: r.name, id: r.id,
       pts: genScore((k) => Number(r[k]) || 0, draft),
     })).sort((a, b) => b.pts - a.pts).slice(0, 5);
-    preview.replaceChildren(
+    swap(preview,
       el('div', { class: 'preview-head' }, `${s.league} career leaders under these settings`),
       el('ol', { class: 'preview-list' }, top.map((r) => el('li', {},
         el('a', { class: 'plink', href: playerHref(r.id) }, r.name),
@@ -3344,7 +3412,7 @@ function viewGenericSettings() {
     if (Object.keys(all).length) saveScoring(all); else resetScoring();
   };
 
-  app().replaceChildren(
+  swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, `Your ${s.league} League Settings`),
       el('p', {}, 'Set your own weights and every ' + s.league +
@@ -3397,13 +3465,13 @@ function viewSettings() {
   const preview = el('div', { class: 'settings-preview' });
 
   const refreshPreview = async () => {
-    preview.replaceChildren(el('div', { class: 'boot-spinner' }));
+    swap(preview, el('div', { class: 'boot-spinner' }));
     const rows = await getBoard('lb_career_batting');
     const scored = rows.map((r) => ({
       name: r.name, id: r.id,
       pts: scoreBatting(flat(r), draft.batting),
     })).sort((a, b) => b.pts - a.pts).slice(0, 5);
-    preview.replaceChildren(
+    swap(preview,
       el('div', { class: 'preview-head' }, 'Career leaders under these settings'),
       el('ol', { class: 'preview-list' },
         scored.map((r) => el('li', {},
@@ -3436,7 +3504,7 @@ function viewSettings() {
     el('div', { class: 'settings-grid' },
       Object.keys(defaults[group]).map((cat) => field(group, cat))));
 
-  app().replaceChildren(
+  swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, 'Your League Settings'),
       el('p', {}, 'Put your own scoring in and every page — players, ' +
@@ -3516,7 +3584,7 @@ function viewPricing() {
         : el('button', { class: 'btn primary', onclick: () => setTier('pro') },
             'Preview Pro (demo)'));
 
-  app().replaceChildren(
+  swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, 'Plans'),
       el('p', {}, 'The whole record book is free to browse. Pro removes the ' +
@@ -3581,7 +3649,7 @@ async function viewHome() {
   const cards = [];
   const s = sport();
 
-  app().replaceChildren(
+  swap(app(),
     el('div', { class: 'hero' },
       el('h1', { class: 'hero-title' },
         'Every player. ', el('em', {}, 'Your'), ' scoring.'),
@@ -3700,7 +3768,7 @@ async function viewHome() {
         `<b>${f.emoji} ${f.league} ${f.meta.seasons[0]}–${f.meta.seasons[1]}.</b> ` +
         (f.meta.coverage_note || 'Complete for every season in that range.') })))));
 
-  grid.replaceChildren(...cards);
+  swap(grid, ...cards);
   mount(grid.parentNode, adSlot('inline'));
 }
 
@@ -3831,7 +3899,7 @@ async function viewHealth() {
 
   const counts = HEALTH.reduce((a, [, , st]) => { a[st] = (a[st] || 0) + 1; return a; }, {});
 
-  app().replaceChildren(
+  swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, 'System Health'),
       el('p', {}, 'Owner view. What every surface does, whether it is running, ' +
@@ -4058,7 +4126,7 @@ function viewChat() {
       : ['Who led the NBA in points in 2016?', 'Most assists all time',
          'Who had the most rebounds in 2011?'];
 
-  app().replaceChildren(
+  swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, `Ask ${s.league}`),
       el('p', {}, 'Questions answered by computing over this site’s data — ' +
@@ -4092,7 +4160,7 @@ function viewChat() {
 // describes real mechanics is worth more than a fake chart.
 
 function betaPage(title, lede, sections, statusNote) {
-  return app().replaceChildren(
+  return swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, title, el('span', { class: 'beta-tag' }, 'Beta')),
       el('p', {}, lede)),
@@ -4195,7 +4263,7 @@ function viewAdmin() {
       }
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
-    return app().replaceChildren(
+    return swap(app(),
       el('div', { class: 'view-head' },
         el('h1', {}, 'Admin Console'),
         el('p', {}, 'The owner’s view: plan override, feature flags, league ' +
@@ -4227,7 +4295,7 @@ function viewAdmin() {
     el('span', { class: `pill ${SPORTS[id].status === 'live' ? 'on' : 'off'}` },
       SPORTS[id].status === 'live' ? 'LIVE' : 'PLACEHOLDER')));
 
-  app().replaceChildren(
+  swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, 'Admin Console'),
       el('p', {}, `Signed in as ${SITE.owner}. Visitors never see this page.`)),
@@ -4295,7 +4363,7 @@ function viewAdmin() {
 
 function viewPrivacy() {
   const ads = SITE.ads.enabled;
-  app().replaceChildren(
+  swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, 'Privacy Policy'),
       el('p', {}, `Last updated ${state.meta.built}`)),
@@ -4362,7 +4430,7 @@ function viewPrivacy() {
 }
 
 function viewTerms() {
-  app().replaceChildren(
+  swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, 'Terms of Use'),
       el('p', {}, `Last updated ${state.meta.built}`)),
@@ -4466,7 +4534,7 @@ async function route() {
   const dataViews = ['player', 'career', 'season', 'year', 'live', 'compare'];
   if (view === 'home') { await viewHome(); return; }
   if (generic && ['live', 'compare'].includes(view)) {
-    return app().replaceChildren(
+    return swap(app(),
       el('div', { class: 'view-head' },
         el('h1', {}, `${sport().league} ${view === 'live' ? 'This Season' : 'Compare'}`),
         el('p', {}, sport().tagline)),
@@ -4485,7 +4553,7 @@ async function route() {
     const labels = { player: 'Player Lookup', career: 'Career Leaders',
                      season: 'Season Leaders', year: 'Year Explorer',
                      live: 'This Season', compare: 'Compare' };
-    return app().replaceChildren(
+    return swap(app(),
       el('div', { class: 'view-head' },
         el('h1', {}, `${sport().league} ${labels[view || 'player']}`),
         el('p', {}, sport().tagline)),
@@ -4517,7 +4585,7 @@ async function route() {
     }
   } catch (err) {
     console.error(err);
-    app().replaceChildren(el('div', { class: 'empty-state' },
+    swap(app(), el('div', { class: 'empty-state' },
       el('h3', {}, 'Something went wrong loading that view'),
       el('div', {}, String(err.message || err))));
   }
@@ -4543,7 +4611,7 @@ async function boot() {
     await route();
   } catch (err) {
     console.error(err);
-    app().replaceChildren(el('div', { class: 'empty-state' },
+    swap(app(), el('div', { class: 'empty-state' },
       el('h3', {}, 'Could not load the dataset'),
       el('div', { html:
         'If you opened this file directly from disk, the browser blocks local JSON reads. ' +

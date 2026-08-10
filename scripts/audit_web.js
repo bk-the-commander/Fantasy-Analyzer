@@ -59,7 +59,29 @@ async function checkRoleOrder(page, path, label, expectFirst) {
   if (summaryOk && logOk) ok('role order', `${label} leads with ${expectFirst}`);
 }
 
+/* Serve web/ ourselves unless a base URL was passed in. The audit used to
+ * assume a static server was already listening on 8811, which meant a fresh
+ * shell produced a wall of navigation timeouts that look like site failures. */
+async function serve() {
+  if (process.argv[2]) return null;
+  const port = Number(new URL(BASE).port || 80);
+  const root = require('path').join(__dirname, '..', 'web');
+  const child = require('child_process')
+    .spawn('python3', ['-m', 'http.server', '-d', root, String(port)], { stdio: 'ignore' });
+  for (let i = 0; i < 40; i++) {
+    try {
+      const res = await fetch(`${BASE}/index.html`);
+      if (res.ok) return child;
+    } catch (e) { /* not up yet */ }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  child.kill();
+  throw new Error(`could not start a static server on ${BASE}`);
+}
+
 (async () => {
+  const server = await serve();
+  process.on('exit', () => server && server.kill());
   const browser = await chromium.launch({ executablePath: EXEC });
 
   // ---------------------------------------------------------------- roles
@@ -336,8 +358,22 @@ async function checkRoleOrder(page, path, label, expectFirst) {
   }
 
   // ----------------------------------------------------------------- tiers
+  //
+  // Metering is currently switched off (SITE.paywall === false) so that the
+  // product can be judged on its own before anything is held back. That makes
+  // the interesting assertion the opposite of the obvious one: nothing may be
+  // capped, locked or nagged about, and the two stored tiers must be
+  // indistinguishable. If the flag is ever flipped back on, this section
+  // switches with it and goes back to checking that the caps bite.
   console.log('\n— plans —');
   {
+    const ctx0 = await browser.newContext();
+    const p0 = await ctx0.newPage();
+    await p0.goto(`${BASE}/#/mlb/career`, { waitUntil: 'networkidle' });
+    await p0.waitForTimeout(900);
+    const metered = await p0.evaluate(() => !!SITE.paywall);
+    await ctx0.close();
+
     const results = {};
     for (const t of ['free', 'pro']) {
       const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
@@ -351,6 +387,7 @@ async function checkRoleOrder(page, path, label, expectFirst) {
       const rows = await tp.$$eval('table.stats tbody tr', (n) => n.length);
       const bar = !!(await tp.$('.upgrade-bar'));
       const locked = !!(await tp.$('.btn.lock'));
+      const badge = await tp.$eval('#tierBadge', (n) => !n.hidden).catch(() => false);
 
       await tp.goto(`${BASE}/#/mlb/player/bondsba01`, { waitUntil: 'networkidle' });
       await tp.waitForTimeout(900);
@@ -364,26 +401,43 @@ async function checkRoleOrder(page, path, label, expectFirst) {
       await tp.waitForTimeout(1200);
       const liveGated = /Pro feature/i.test(await tp.evaluate(() => document.querySelector('#app').innerText));
 
-      results[t] = { rows, bar, locked, seasons, cards, liveGated };
+      results[t] = { rows, bar, locked, badge, seasons, cards, liveGated };
       if (errs.length) fail('plans', `${t}: ${errs.join('|')}`);
       await ctx.close();
     }
 
     const f = results.free, pr = results.pro;
-    if (f.rows > 100) fail('plans', `free showed ${f.rows} board rows, cap is 100`);
-    else ok('plans', `free board capped at ${f.rows} rows`);
-    if (!f.bar) fail('plans', 'free board showed no upgrade prompt');
-    else ok('plans', 'free board explains the cap');
-    if (!f.locked) fail('plans', 'export was not locked on free');
-    else ok('plans', 'export locked on free');
-    if (f.seasons >= pr.seasons) fail('plans', `season log not capped (free ${f.seasons}, pro ${pr.seasons})`);
-    else ok('plans', `season log ${f.seasons} rows free vs ${pr.seasons} pro`);
-    if (f.cards !== 2 || pr.cards !== 3) fail('plans', `compare caps wrong (free ${f.cards}, pro ${pr.cards})`);
-    else ok('plans', 'compare capped at 2 on free, 3 shown on pro');
-    if (!f.liveGated) fail('plans', 'live stats were not gated on free');
-    else ok('plans', 'live stats are Pro-only');
-    if (pr.rows <= f.rows || pr.bar || pr.locked) fail('plans', 'pro did not unlock the board');
-    else ok('plans', `pro board shows ${pr.rows} rows, no caps`);
+    if (metered) {
+      if (f.rows > 100) fail('plans', `free showed ${f.rows} board rows, cap is 100`);
+      else ok('plans', `free board capped at ${f.rows} rows`);
+      if (!f.bar) fail('plans', 'free board showed no upgrade prompt');
+      else ok('plans', 'free board explains the cap');
+      if (!f.locked) fail('plans', 'export was not locked on free');
+      else ok('plans', 'export locked on free');
+      if (f.seasons >= pr.seasons) fail('plans', `season log not capped (free ${f.seasons}, pro ${pr.seasons})`);
+      else ok('plans', `season log ${f.seasons} rows free vs ${pr.seasons} pro`);
+      if (f.cards !== 2 || pr.cards !== 3) fail('plans', `compare caps wrong (free ${f.cards}, pro ${pr.cards})`);
+      else ok('plans', 'compare capped at 2 on free, 3 shown on pro');
+      if (!f.liveGated) fail('plans', 'live stats were not gated on free');
+      else ok('plans', 'live stats are Pro-only');
+      if (pr.rows <= f.rows || pr.bar || pr.locked) fail('plans', 'pro did not unlock the board');
+      else ok('plans', `pro board shows ${pr.rows} rows, no caps`);
+    } else {
+      if (f.bar || pr.bar) fail('plans', 'metering is off but an upgrade prompt is still shown');
+      else ok('plans', 'metering off — no upgrade prompts anywhere');
+      if (f.locked || pr.locked) fail('plans', 'metering is off but export is still locked');
+      else ok('plans', 'metering off — export is open');
+      if (f.liveGated || pr.liveGated) fail('plans', 'metering is off but live stats are still gated');
+      else ok('plans', 'metering off — live stats are open');
+      if (f.badge || pr.badge) fail('plans', 'metering is off but the plan badge is still visible');
+      else ok('plans', 'metering off — no plan badge in the panel');
+      if (f.rows !== pr.rows || f.seasons !== pr.seasons || f.cards !== pr.cards) {
+        fail('plans', `stored tier still changes what is shown ` +
+          `(rows ${f.rows}/${pr.rows}, seasons ${f.seasons}/${pr.seasons}, cards ${f.cards}/${pr.cards})`);
+      } else {
+        ok('plans', `both tiers see the same product (${pr.rows} rows, ${pr.seasons} seasons, ${pr.cards} compared)`);
+      }
+    }
   }
 
   // ------------------------------------------------------- custom scoring
@@ -572,7 +626,14 @@ async function checkRoleOrder(page, path, label, expectFirst) {
       await hp.waitForTimeout(1200);
       await hp.fill('.chat-input', question);
       await hp.keyboard.press('Enter');
-      await hp.waitForTimeout(2600);
+      // The assistant posts an ellipsis while it fetches the shard it needs, so
+      // a fixed sleep races the network on a cold cache. Wait for the real
+      // answer to replace the placeholder instead.
+      await hp.waitForFunction(() => {
+        const msgs = document.querySelectorAll('.chat-msg.bot');
+        const last = msgs[msgs.length - 1];
+        return last && last.innerText.trim() !== '…';
+      }, null, { timeout: 15000 }).catch(() => {});
       const last = (await hp.$$eval('.chat-msg.bot', (n) => n.map((x) => x.innerText))).pop() || '';
       if (!expect.test(last)) fail('chat', `"${question}" -> ${last.slice(0, 70)}`);
       else ok('chat', `${question} -> ${last.split('\n')[0].slice(0, 62)}`);
@@ -582,7 +643,11 @@ async function checkRoleOrder(page, path, label, expectFirst) {
     await hp.waitForTimeout(1000);
     await hp.fill('.chat-input', 'what is the weather today');
     await hp.keyboard.press('Enter');
-    await hp.waitForTimeout(1500);
+    await hp.waitForFunction(() => {
+      const msgs = document.querySelectorAll('.chat-msg.bot');
+      const last = msgs[msgs.length - 1];
+      return last && last.innerText.trim() !== '…';
+    }, null, { timeout: 15000 }).catch(() => {});
     const miss = (await hp.$$eval('.chat-msg.bot', (n) => n.map((x) => x.innerText))).pop() || '';
     if (!/Ask an? MLB question/i.test(miss)) fail('chat', `off-topic answered with: ${miss.slice(0, 70)}`);
     else ok('chat', 'off-topic question is refused, not guessed');
@@ -792,6 +857,7 @@ async function checkRoleOrder(page, path, label, expectFirst) {
   }
 
   await browser.close();
+  if (server) server.kill();
 
   console.log(`\n${'='.repeat(60)}`);
   if (problems.length) {

@@ -7,3 +7,6 @@ __pycache__/
 node_modules/
 package-lock.json
 .cache/
+
+# Built by scripts/build_preview.py — a 7 MB regenerable artifact.
+preview.html
