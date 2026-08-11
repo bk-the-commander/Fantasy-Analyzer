@@ -1,8 +1,12 @@
 # SOT — Source of Truth
 
-**Kaliris Labs** · prototype
+**Kaliris Labs** · prototype · **work in progress**
 
 *Everything you know about someone, in one place.*
+
+> The build is stable and tested. The **positioning is not decided** — see
+> [`DIRECTION.md`](DIRECTION.md) for the candidate wedges, what the findings data suggests, and
+> the two questions that have to be answered before this becomes a product rather than a proof.
 
 A unified entity graph across every system an organization runs. It resolves one identity per
 person, place and event, computes each field from a policy the customer owns, and links
