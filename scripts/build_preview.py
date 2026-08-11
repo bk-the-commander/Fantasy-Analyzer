@@ -121,6 +121,12 @@ def main() -> int:
         "players": players,
         "playerCount": len(players),
     }
+    # The category-leader tables are tiny and must not be trimmed: the whole
+    # point of them is that they are the real leaders, not the leaders among
+    # whoever happened to make the preview subset.
+    leaders = DATA / "leaders.json"
+    if leaders.exists():
+        payload["leaders.json"] = json.loads(leaders.read_text())
     for name in BOARDS:
         payload[name] = trim_board(load(name), args.board_rows)
 
@@ -141,6 +147,9 @@ def main() -> int:
         for board in ("lb_career.json", "lb_season.json"):
             raw = json.loads((ddir / board).read_text())
             payload[f"{league}:{board}"] = trim_board(raw, args.board_rows)
+        lleaders = ddir / "leaders.json"
+        if lleaders.exists():
+            payload[f"{league}:leaders.json"] = json.loads(lleaders.read_text())
 
         ranked = sorted(zip(lindex["ids"], lindex["bp"]), key=lambda t: -t[1])
         keep_l = [pid for pid, _ in ranked[:args.players]]

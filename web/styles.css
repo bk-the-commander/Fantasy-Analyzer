@@ -1255,6 +1255,144 @@ select:focus, input:focus, textarea:focus {
   .stint-years { font-size: 11.5px; }
 }
 
+/* ------------------------------------------------------------- build plan
+ * The owner's roadmap: numbered steps, an estimate on the ones that cost
+ * money, and a tag on the ones nobody but Bill can decide.
+ */
+.plan-steps {
+  list-style: none; counter-reset: plan; margin: 0; padding: 4px 0;
+}
+.plan-step {
+  counter-increment: plan;
+  position: relative; padding: 14px 18px 14px 52px;
+  border-bottom: 1px solid var(--border); text-align: left;
+}
+.plan-step:last-child { border-bottom: 0; }
+.plan-step::before {
+  content: counter(plan);
+  position: absolute; left: 18px; top: 14px;
+  width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--surface-3); color: var(--text-muted);
+  font-size: 11px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.plan-step.decision::before {
+  background: linear-gradient(180deg, var(--accent-strong), var(--accent-deep));
+  color: var(--accent-ink);
+}
+.plan-step-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 5px;
+}
+.plan-step-head b { color: var(--text-strong); font-size: 14px; }
+.plan-cost {
+  font-size: 12px; font-weight: 700; color: var(--accent);
+  white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.plan-step p {
+  margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.7;
+  max-width: 72ch;
+}
+.plan-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.plan-tags:empty { margin-top: 0; }
+.plan-tag {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px;
+  background: var(--surface-3); color: var(--text-faint);
+  border: 1px solid var(--border-strong);
+}
+.plan-tag.you { color: var(--accent); border-color: var(--accent-line); }
+.plan-tag.blocked { color: #e5484d; border-color: rgba(229, 72, 77, .35); }
+
+/* The costs table carries sentences, not figures, so its cells wrap. */
+.panel .table-scroll table.stats td.txt { white-space: normal; }
+.panel .table-scroll table.stats td.txt:last-child {
+  min-width: 260px; color: var(--text-muted); line-height: 1.6;
+}
+
+@media (max-width: 560px) {
+  .plan-step { padding: 12px 14px 12px 44px; }
+  .plan-step::before { left: 13px; }
+}
+
+/* ------------------------------------------------------- category leaders
+ * A league's own statistics on the home page: a row of category chips, a
+ * career/season switch, and five names with a bar showing each one's share of
+ * the leader's total. Everything here is clickable -- the chips redraw the
+ * list, the names open the player, the footer link opens the full board
+ * already sorted on the category you were looking at.
+ */
+.lead-card .home-card-head { align-items: center; flex-wrap: wrap; }
+.lead-seg { margin-left: auto; flex: none; }
+.lead-seg button { padding: 6px 12px; font-size: 11.5px; }
+
+.lead-chips {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  margin: 2px 0 14px;
+}
+.lead-chip {
+  padding: 5px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border-strong); background: var(--surface-2);
+  color: var(--text-muted); font-family: var(--sans);
+  font-size: 11.5px; font-weight: 600; white-space: nowrap;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.lead-chip:hover { color: var(--accent); border-color: var(--accent); }
+.lead-chip.on {
+  background: linear-gradient(180deg, var(--accent-strong), var(--accent-deep));
+  border-color: var(--accent); color: var(--accent-ink);
+}
+
+.lead-list { list-style: none; margin: 0; padding: 0; }
+.lead-row {
+  display: grid; align-items: center;
+  grid-template-columns: 18px minmax(96px, 1.35fr) minmax(64px, .8fr) 1fr 72px;
+  gap: 10px; padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+.lead-row:last-child { border-bottom: 0; }
+.lead-rank {
+  font-size: 11px; color: var(--text-faint); text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.lead-name {
+  font-size: 13.5px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lead-when {
+  font-size: 11px; color: var(--text-faint); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.lead-bar {
+  position: relative; height: 7px; border-radius: 999px;
+  background: var(--surface-3); overflow: hidden; min-width: 30px;
+}
+.lead-fill {
+  position: absolute; inset: 0 auto 0 0; border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-line), var(--accent));
+  transition: width .28s ease;
+}
+.lead-row:first-child .lead-fill {
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+}
+.lead-value {
+  text-align: right; font-size: 13px; font-weight: 700; color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) { .lead-fill { transition: none; } }
+
+/* On a phone the bar is the first thing worth dropping: five names, when they
+   played and the number matter more than the comparison. */
+@media (max-width: 620px) {
+  .lead-seg { margin-left: 0; width: 100%; }
+  .lead-row { grid-template-columns: 16px 1fr auto; gap: 8px; row-gap: 2px; }
+  .lead-bar { display: none; }
+  .lead-when { grid-column: 2; font-size: 10.5px; }
+  .lead-value { grid-row: 1 / span 2; grid-column: 3; align-self: center; }
+}
+
 .chip-row { display: flex; gap: 7px; flex-wrap: wrap; padding: 0 18px 16px; justify-content: center; }
 .chip.static { cursor: default; }
 .chip.static:hover { border-color: var(--border-strong); color: var(--text-muted); }

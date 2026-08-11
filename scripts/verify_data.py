@@ -162,6 +162,68 @@ check("2005-06 points leader", name, "Kobe Bryant")
 nba_meta = load("data-nba", "meta.json")
 check("NBA season range", nba_meta["seasons"], [1996, 2025])
 
+# ------------------------------------------------------- category leaders
+#
+# leaders.json is computed from the complete season logs rather than from the
+# points-selected board pool, so these are checkable against the record book.
+print("\n— category leaders —")
+
+
+def leader(folder, scope, key, field="name"):
+    rows = load(folder, "leaders.json")[scope][key]
+    return rows[0][field] if rows else None
+
+
+check("MLB career HR leader", leader("data", "career", "HR"), "Barry Bonds")
+check("MLB career HR total", leader("data", "career", "HR", "v"), 762)
+check("MLB career hits leader", leader("data", "career", "H"), "Pete Rose")
+check("MLB career hits total", leader("data", "career", "H", "v"), 4256)
+check("MLB career SB leader", leader("data", "career", "SB"), "Rickey Henderson")
+check("MLB career wins leader", leader("data", "career", "W"), "Cy Young")
+check("MLB career saves leader", leader("data", "career", "SV"), "Mariano Rivera")
+check("MLB career innings leader", leader("data", "career", "IP", "v"), 7356.0, tol=0.5)
+# The live-ball qualifiers make these the standard record-book answers.
+check("MLB career ERA leader", leader("data", "career", "ERA"), "Ed Walsh")
+check("MLB career ERA", leader("data", "career", "ERA", "v"), 1.82, tol=0.01)
+check("MLB season hits leader", leader("data", "season", "H"), "Ichiro Suzuki")
+check("MLB season hits", leader("data", "season", "H", "v"), 262)
+check("MLB season RBI leader", leader("data", "season", "RBI"), "Hack Wilson")
+check("MLB season RBI", leader("data", "season", "RBI", "v"), 191)
+check("MLB season ERA leader", leader("data", "season", "ERA"), "Dutch Leonard")
+check("MLB season ERA", leader("data", "season", "ERA", "v"), 0.96, tol=0.01)
+check("MLB season doubles", leader("data", "season", "D2", "v"), 67)
+
+check("NFL career passing-yards leader", leader("data-nfl", "career", "PassYd"), "Tom Brady")
+check("NFL career rushing-yards leader", leader("data-nfl", "career", "RushYd"), "Frank Gore")
+check("NFL career receiving-TD leader", leader("data-nfl", "career", "RecTD"), "Randy Moss")
+check("NFL season passing-yards leader", leader("data-nfl", "season", "PassYd"), "Drew Brees")
+check("NFL season passing yards", leader("data-nfl", "season", "PassYd", "v"), 5535)
+check("NFL season receptions", leader("data-nfl", "season", "Rec", "v"), 149)
+
+# Duncan's 15,091 rebounds and 3,020 blocks are his real career totals, and the
+# 1996 start date is late enough that nobody ahead of him is truncated.
+check("NBA career rebounds leader", leader("data-nba", "career", "REB"), "Tim Duncan")
+check("NBA career rebounds", leader("data-nba", "career", "REB", "v"), 15091)
+check("NBA career blocks", leader("data-nba", "career", "BLK", "v"), 3020)
+check("NBA career assists leader", leader("data-nba", "career", "AST"), "Chris Paul")
+check("NBA career three-point leader", leader("data-nba", "career", "FG3M"), "Stephen Curry")
+check("NBA season three-pointers", leader("data-nba", "season", "FG3M", "v"), 402)
+check("NBA season steals leader", leader("data-nba", "season", "STL"), "Dyson Daniels")
+
+# Every table must be full and ordered, in every league.
+for label, folder in (("MLB", "data"), ("NFL", "data-nfl"), ("NBA", "data-nba")):
+    payload = load(folder, "leaders.json")
+    for scope in ("career", "season"):
+        for spec in payload["stats"]:
+            rows = payload[scope][spec["key"]]
+            checks += 1
+            vals = [r["v"] for r in rows]
+            ordered = (sorted(vals) == vals) if spec.get("asc") else (sorted(vals, reverse=True) == vals)
+            if len(rows) != 10 or not ordered:
+                failures.append(f"{label} {scope} {spec['key']}: {len(rows)} rows, ordered={ordered}")
+                print(f"  FAIL {label} {scope} {spec['key']}: {len(rows)} rows, ordered={ordered}")
+    print(f"  ok   {label}: {len(payload['stats'])} categories, 10 ranked rows each, both scopes")
+
 # ------------------------------------------------------------- integrity
 print("\n— integrity —")
 for label, folder in (("MLB", "data"), ("NFL", "data-nfl"), ("NBA", "data-nba")):

@@ -655,6 +655,115 @@ async function serve() {
     await ctx.close();
   }
 
+  // ------------------------------------------------------- category leaders
+  //
+  // The home page leads with each league's own statistics. These are checked
+  // against records anyone can verify, because a leaderboard that is merely
+  // interactive and quietly wrong is worse than no leaderboard.
+  console.log('\n— category leaders —');
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+    const lp = await ctx.newPage();
+    const errs = [];
+    lp.on('pageerror', (e) => errs.push(e.message));
+    await lp.goto(`${BASE}/#/home`, { waitUntil: 'networkidle' });
+    await lp.waitForTimeout(3000);
+
+    const cardCount = await lp.$$eval('.lead-card', (n) => n.length);
+    if (cardCount !== 3) fail('leaders', `${cardCount} category cards, expected one per league`);
+    else ok('leaders', 'a category card for each of the three leagues');
+
+    // [league, category chip, scope, expected leader, expected value]
+    const expect = [
+      ['MLB', 'Home runs', 'career', 'Barry Bonds', '762'],
+      ['MLB', 'Stolen bases', 'career', 'Rickey Henderson', '1,406'],
+      ['MLB', 'Hits', 'season', 'Ichiro Suzuki', '262'],
+      ['NBA', 'Assists', 'career', 'Chris Paul', null],
+      ['NBA', 'Rebounds', 'career', 'Tim Duncan', '15,091'],
+      ['NBA', 'Blocks', 'season', 'Theo Ratliff', '307'],
+      ['NFL', 'Receptions', 'career', 'Larry Fitzgerald', null],
+      ['NFL', 'Passing TDs', 'season', 'Peyton Manning', '55'],
+      ['NFL', 'Rushing yards', 'season', 'Adrian Peterson', '2,097'],
+    ];
+    for (const [league, chip, scope, who, value] of expect) {
+      const card = await lp.$(`.lead-card:has(h3:text-is("${league} — category leaders"))`);
+      if (!card) { fail('leaders', `no ${league} category card`); continue; }
+      const btn = await card.$(`.lead-chip:text-is("${chip}")`);
+      if (!btn) { fail('leaders', `${league}: no "${chip}" chip`); continue; }
+      await btn.click();
+      const segs = await card.$$('.lead-seg button');
+      await segs[scope === 'career' ? 0 : 1].click();
+      await lp.waitForTimeout(250);
+      const top = await card.$eval('.lead-row',
+        (n) => [n.querySelector('.lead-name').textContent.trim(),
+                n.querySelector('.lead-value').textContent.trim()]);
+      const nameOk = top[0] === who;
+      const valOk = value === null || top[1] === value;
+      if (!nameOk || !valOk) {
+        fail('leaders', `${league} ${chip} (${scope}): got ${top.join(' ')}, expected ${who} ${value ?? ''}`);
+      } else {
+        ok('leaders', `${league} ${scope} ${chip.toLowerCase()}: ${top[0]} ${top[1]}`);
+      }
+    }
+
+    // The bars have to move when the category does -- a chart that never
+    // redraws is decoration.
+    const nba = await lp.$('.lead-card:has(h3:text-is("NBA — category leaders"))');
+    await (await nba.$('.lead-chip:text-is("Points")')).click();
+    await lp.waitForTimeout(300);
+    const wA = await nba.$$eval('.lead-fill', (n) => n.map((x) => x.style.width).join());
+    await (await nba.$('.lead-chip:text-is("Blocks")')).click();
+    await lp.waitForTimeout(300);
+    const wB = await nba.$$eval('.lead-fill', (n) => n.map((x) => x.style.width).join());
+    if (wA === wB) fail('leaders', 'the bars did not redraw when the category changed');
+    else ok('leaders', 'bars redraw per category');
+
+    // Every row is a link to that player, and the footer link opens the full
+    // board already sorted on the category shown.
+    const href = await nba.$eval('.lead-row .lead-name', (n) => n.getAttribute('href'));
+    if (!/^#\/nba\/player\//.test(href || '')) fail('leaders', `row link was ${href}`);
+    else ok('leaders', `rows link into the league (${href})`);
+
+    const more = await nba.$eval('.home-more', (n) => n.getAttribute('href'));
+    if (!/sort=BLK/.test(more || '')) fail('leaders', `footer link was ${more}`);
+    else ok('leaders', `footer deep-links the sorted board (${more})`);
+    if (errs.length) fail('leaders', errs.join('|'));
+    await ctx.close();
+  }
+
+  // --------------------------------------------------- sorted deep links
+  console.log('\n— deep links —');
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+    const dp = await ctx.newPage();
+    const errs = [];
+    dp.on('pageerror', (e) => errs.push(e.message));
+    const cases = [
+      ['#/nba/career?sort=AST', 'AST', 'Chris Paul'],
+      ['#/nba/career?sort=MIN', 'MIN', 'LeBron James'],
+      ['#/mlb/career?sort=SV&group=pitching', 'SV', 'Mariano Rivera'],
+      ['#/mlb/career?sort=HR&group=batting', 'HR', 'Barry Bonds'],
+      ['#/nfl/career?sort=RecYd', 'RecYd', 'Larry Fitzgerald'],
+    ];
+    for (const [link, col, who] of cases) {
+      await dp.goto(`${BASE}/${link}`, { waitUntil: 'networkidle' });
+      await dp.waitForTimeout(1600);
+      const sorted = await dp.$$eval('table.stats thead th.sorted', (n) => n.map((x) => x.textContent.trim()));
+      const first = await dp.$eval('table.stats tbody tr td:nth-child(2)', (n) => n.textContent.replace('★', '').trim());
+      if (!sorted.includes(col)) fail('deep link', `${link}: sorted on ${sorted.join()||'nothing'}, expected ${col}`);
+      else if (first !== who) fail('deep link', `${link}: top row ${first}, expected ${who}`);
+      else ok('deep link', `${link} -> ${col} sorted, ${first} on top`);
+    }
+    // A sort key with no matching column must fall back, not throw.
+    await dp.goto(`${BASE}/#/nba/career?sort=NOPE`, { waitUntil: 'networkidle' });
+    await dp.waitForTimeout(1400);
+    const rows = await dp.$$eval('table.stats tbody tr', (n) => n.length);
+    if (!rows) fail('deep link', 'an unknown sort key emptied the board');
+    else ok('deep link', `unknown sort key falls back cleanly (${rows} rows)`);
+    if (errs.length) fail('deep link', errs.join('|'));
+    await ctx.close();
+  }
+
   // ------------------------------------------------------------ navigation
   console.log('\n— control panel —');
   {
@@ -804,7 +913,8 @@ async function serve() {
                   '#/career', '#/season', '#/year/1998', '#/live', '#/compare/bondsba01,ruthba01',
                   '#/scoring', '#/about', '#/contact', '#/privacy', '#/terms',
                   '#/pricing', '#/nba/player', '#/nba/scoring', '#/nfl/career', '#/nfl/scoring',
-                  '#/health', '#/mlb/chat', '#/nfl/chat', '#/nba/career', '#/settings'];
+                  '#/health', '#/roadmap', '#/mlb/chat', '#/nfl/chat', '#/nba/career',
+                  '#/settings', '#/nba/career?sort=AST', '#/mlb/career?sort=SV&group=pitching'];
   const DEVICES = [
     [360, 800, 'android-small', true],   // Galaxy S-class
     [390, 844, 'iphone', true],          // iPhone 14/15

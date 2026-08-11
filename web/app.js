@@ -321,6 +321,27 @@ async function loadSportData(id) {
   }
 }
 
+/** Per-stat leader tables, built offline from the complete season logs.
+ *  Kept separate from the boards because the boards are a pool selected by
+ *  fantasy points -- see scripts/build_leaders.py for why that matters. */
+async function loadLeaders(id) {
+  const entry = state.sports[id];
+  if (!entry) return null;
+  if (entry.leaders !== undefined) return entry.leaders;
+  const previous = state.sport;
+  state.sport = id;
+  try {
+    entry.leaders = await getJSON('leaders.json');
+  } catch (err) {
+    // An older dataset without the file is a missing card, not a broken page.
+    console.info(`[${SITE.shortName}] no leaders.json for ${id}`);
+    entry.leaders = null;
+  } finally {
+    state.sport = previous;
+  }
+  return entry.leaders;
+}
+
 /** Point the shared lookups at a league's data. */
 function useSportData(id) {
   const entry = state.sports[id];
@@ -513,8 +534,9 @@ const NAV = [
     ['contact', 'Contact', '✉️', false, 'Corrections and enquiries'],
   ] },
   { id: 'owner', label: 'Owner', icon: '🔧', open: false, owner: true, items: [
-    ['health', 'System Health', '🩺', false, 'What is running and what needs work'],
-    ['admin',  'Admin Console', '🔐', false, 'Plan override and feature flags'],
+    ['health',  'System Health',   '🩺', false, 'What is running and what needs work'],
+    ['roadmap', 'Build Plan & Costs', '🗺️', false, 'Next steps, pricing, what to pay for'],
+    ['admin',   'Admin Console',   '🔐', false, 'Plan override and feature flags'],
   ] },
 ];
 
@@ -1446,8 +1468,9 @@ function statTable(rows, cols, opts = {}) {
     table.innerHTML = '';
     wrap.querySelectorAll(':scope > .more').forEach((n) => n.remove());
     let data = [...rows];
+    const col = sortKey ? cols.find((c) => c.key === sortKey) : null;
+    if (sortKey && !col) sortKey = null;   // deep link naming a column we do not show
     if (sortKey) {
-      const col = cols.find((c) => c.key === sortKey);
       data.sort((a, b) => {
         const va = col.sortVal ? col.sortVal(a) : a[sortKey];
         const vb = col.sortVal ? col.sortVal(b) : b[sortKey];
@@ -2036,13 +2059,14 @@ async function viewLeaders(kind) {
   swap(app());
   mount(app(), head, panel, adSlot('leaderboard'));
 
+  const wanted = state.query || {};
   const opts = {
-    group: 'batting',
+    group: wanted.group === 'pitching' ? 'pitching' : 'batting',
     era: 0,
     minG: 0,
     pos: '',
     q: '',
-    sortKey: 'pts',
+    sortKey: wanted.sort || 'pts',
   };
 
   const draw = async () => {
@@ -2072,7 +2096,7 @@ async function viewLeaders(kind) {
         el('div', { style: 'margin-top:8px' },
           exportButton(filtered, boardExportCols(opts.group, isCareer),
             `${state.sport}-${isCareer ? 'career' : 'season'}-${opts.group}.csv`))),
-      buildBoardTable(shown, opts.group, isCareer),
+      buildBoardTable(shown, opts.group, isCareer, opts.sortKey),
       capped ? upgradeBar(
         `${num(filtered.length - shown.length)} more rows on Pro`,
         'The free plan shows the top ' + num(FREE.boardRows) + '.') : null);
@@ -2080,16 +2104,21 @@ async function viewLeaders(kind) {
 
   // --- filter controls ----------------------------------------------------
   const seg = el('div', { class: 'seg' },
-    el('button', { class: 'on', onclick: (e) => setGroup('batting', e.target) }, 'Batting'),
-    el('button', { onclick: (e) => setGroup('pitching', e.target) }, 'Pitching'));
+    el('button', { class: opts.group === 'batting' ? 'on' : '',
+                   onclick: (e) => setGroup('batting', e.target) }, 'Batting'),
+    el('button', { class: opts.group === 'pitching' ? 'on' : '',
+                   onclick: (e) => setGroup('pitching', e.target) }, 'Pitching'));
   function setGroup(g, btn) {
+    // Switching sides invalidates a column that only exists on the other one.
+    if (opts.group !== g) opts.sortKey = 'pts';
     opts.group = g; opts.pos = '';
     seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === btn));
     posField.style.display = g === 'batting' ? '' : 'none';
     draw();
   }
 
-  const posField = el('div', { class: 'field' },
+  const posField = el('div', { class: 'field',
+                              style: opts.group === 'batting' ? '' : 'display:none' },
     el('label', {}, 'Position'),
     el('select', { onchange: (e) => { opts.pos = e.target.value; draw(); } },
       el('option', { value: '' }, 'Any'),
@@ -2128,7 +2157,7 @@ function playerLink(row) {
   return a;
 }
 
-function buildBoardTable(rows, group, isCareer) {
+function buildBoardTable(rows, group, isCareer, sortKey = 'pts') {
   const hidePlus = usingCustomScoring();
   const maxPts = Math.max(...rows.map((r) => r.pts), 1);
   const heat = (v) => Math.max(0, v / maxPts);
@@ -2180,7 +2209,9 @@ function buildBoardTable(rows, group, isCareer) {
         get: (r) => r.ptsplus ? num(r.ptsplus, 0) : '—' },
       ptsCol].filter(Boolean);
   }
-  return statTable(rows, cols, { rank: true, sortKey: 'pts', limit: 200, page: 200 });
+  // ERA sorts low-to-high; everything else reads best-first descending.
+  const asc = !!cols.find((c) => c.key === sortKey)?.ascDefault;
+  return statTable(rows, cols, { rank: true, sortKey, asc, limit: 200, page: 200 });
 }
 
 // ------------------------------------------------------------- year explorer
@@ -3245,7 +3276,15 @@ async function viewGenericBoard(kind) {
   const raw = await getBoard(isCareer ? 'lb_career' : 'lb_season');
   const weights = genWeights();
   const stats = genStats();
-  const opts = { q: '', minG: 0, pos: '' };
+  const wanted = state.query || {};
+  // A deep link may ask to sort by a category the default eight columns do not
+  // include (minutes, free throws). Show that column rather than silently
+  // ignoring the request the reader clicked on.
+  const shownStats = stats.slice(0, 8);
+  if (wanted.sort && stats.includes(wanted.sort) && !shownStats.includes(wanted.sort)) {
+    shownStats.push(wanted.sort);
+  }
+  const opts = { q: '', minG: 0, pos: '', sortKey: wanted.sort || 'pts' };
 
   const scored = raw.map((r) => {
     const read = (k) => Number(r[k]) || 0;
@@ -3271,7 +3310,7 @@ async function viewGenericBoard(kind) {
       isCareer ? { key: 'seasons', label: 'Yrs' }
                : { key: 'pos', label: 'Pos', cls: 'txt' },
       { key: 'G', label: 'G', get: (r) => num(r.G, r.G % 1 ? 1 : 0) },
-      ...stats.slice(0, 8).map((s2) => ({ key: s2, label: s2,
+      ...shownStats.map((s2) => ({ key: s2, label: s2,
         get: (r) => num(r[s2], Math.abs(r[s2]) < 100 && r[s2] % 1 ? 1 : 0) })),
       !isCareer && !genCustom()
         ? { key: 'ptsplus', label: 'PTS+', get: (r) => (r.ptsplus ? num(r.ptsplus, 0) : '—') }
@@ -3292,7 +3331,7 @@ async function viewGenericBoard(kind) {
             .map((c) => ({ key: c.key, label: c.label }))
             .concat([{ key: 'name', label: 'Player' }]),
             `${state.sport}-${kind}.csv`))),
-      statTable(shown, cols, { rank: true, sortKey: 'pts', limit: 200, page: 200 }),
+      statTable(shown, cols, { rank: true, sortKey: opts.sortKey, limit: 200, page: 200 }),
       shown.length < filtered.length
         ? upgradeBar(`${num(filtered.length - shown.length)} more rows on Pro`,
             `The free plan shows the top ${num(FREE.boardRows)}.`)
@@ -3645,6 +3684,111 @@ function viewPricing() {
 // fantasy manager would actually click -- record seasons, era leaders, the
 // players whose value swings most under different scoring.
 
+/* ------------------------------------------------------- stat leaders card
+ *
+ * Points are this site's own invention; home runs, assists and rushing yards
+ * are what the sport actually recorded. Leading with only points asks a new
+ * visitor to trust a number they have never seen before, so the home page
+ * opens each league on its real categories and lets them switch.
+ *
+ * Every row is a link, every chip re-renders the list, and the bar next to a
+ * name is that player's share of the leader's total -- a chart small enough to
+ * read at a glance and honest enough to show a runaway record for what it is.
+ */
+function statLeadersCard(sportId, leaders, meta) {
+  if (!leaders || !leaders.stats || !leaders.stats.length) return null;
+  const s = SPORTS[sportId];
+  const state2 = { stat: leaders.stats[0].key, scope: 'career' };
+
+  const chips = el('div', { class: 'lead-chips', role: 'group',
+                            'aria-label': `${s.league} categories` });
+  const listWrap = el('div', { class: 'lead-body' });
+  const foot = el('a', { class: 'home-more' });
+  const caption = el('span', { class: 'home-meta' });
+
+  const spec = () => leaders.stats.find((x) => x.key === state2.stat) || leaders.stats[0];
+
+  const draw = () => {
+    const sp = spec();
+    const rows = (leaders[state2.scope] || {})[sp.key] || [];
+    chips.querySelectorAll('button').forEach((b) => {
+      b.classList.toggle('on', b.dataset.key === state2.stat);
+      b.setAttribute('aria-pressed', String(b.dataset.key === state2.stat));
+    });
+
+    // Bars are scaled against the top value, and for an ascending stat like
+    // ERA the best value is the smallest -- so the bar reads "how close to the
+    // leader", not "how big", in both directions.
+    const vals = rows.map((r) => r.v).filter((v) => typeof v === 'number');
+    const best = sp.asc ? Math.min(...vals) : Math.max(...vals);
+    const worst = sp.asc ? Math.max(...vals) : 0;
+    const share = (v) => {
+      if (!vals.length || best === undefined) return 0;
+      if (!sp.asc) return best ? Math.max(0, v / best) : 0;
+      const range = worst - best;
+      return range ? 1 - ((v - best) / range) * 0.7 : 1;
+    };
+
+    if (!rows.length) {
+      swap(listWrap, el('div', { class: 'empty-state' },
+        el('h3', {}, 'Nothing recorded for that category')));
+    } else {
+      swap(listWrap, el('ol', { class: 'lead-list' },
+        rows.slice(0, 5).map((r, i) => el('li', { class: 'lead-row' },
+          el('span', { class: 'lead-rank' }, String(i + 1)),
+          el('a', { class: 'lead-name plink', href: `#/${sportId}/player/${r.pid}`,
+                    title: `${r.name} — full player page` }, r.name),
+          el('span', { class: 'lead-when' }, state2.scope === 'season'
+            ? `${r.year}${r.team ? ` · ${r.team}` : ''}`
+            : (r.span ? `${r.span[0]}–${r.span[1]}` : '')),
+          el('span', { class: 'lead-bar' },
+            el('span', { class: 'lead-fill',
+                         style: `width:${(share(r.v) * 100).toFixed(1)}%` })),
+          el('span', { class: 'lead-value' }, num(r.v, sp.dp || 0))))));
+    }
+
+    const range = `${meta.seasons[0]}–${meta.seasons[1]}`;
+    caption.textContent = state2.scope === 'career'
+      ? `Career totals · seasons ${range}`
+      : `Best single seasons · ${range}`;
+    // Deep-link into the sortable board already sorted by this category, so the
+    // card is a way in rather than a dead end.
+    const group = sp.side === 'pit' ? 'pitching' : 'batting';
+    const view = state2.scope === 'career' ? 'career' : 'season';
+    foot.href = `#/${sportId}/${view}?sort=${encodeURIComponent(sp.key)}` +
+                (SPORTS[sportId].generic ? '' : `&group=${group}`);
+    foot.textContent = `All ${sp.label.toLowerCase()} leaders →`;
+  };
+
+  mount(chips, leaders.stats.map((st) => el('button', {
+    type: 'button', class: 'lead-chip', 'data-key': st.key,
+    onclick: () => { state2.stat = st.key; draw(); },
+  }, st.label)));
+
+  const scopeSeg = el('div', { class: 'seg lead-seg' },
+    ['career', 'season'].map((k) => el('button', {
+      type: 'button', class: k === 'career' ? 'on' : '',
+      onclick: (e) => {
+        state2.scope = k;
+        scopeSeg.querySelectorAll('button')
+          .forEach((b) => b.classList.toggle('on', b === e.target));
+        draw();
+      },
+    }, k === 'career' ? 'Career' : 'Single season')));
+
+  const card = el('article', { class: 'home-card wide lead-card' },
+    el('div', { class: 'home-card-head' },
+      el('span', { class: 'home-ball' }, s.emoji),
+      el('div', {},
+        el('h3', {}, `${s.league} — category leaders`),
+        caption),
+      scopeSeg),
+    chips, listWrap, foot);
+
+  draw();
+  return card;
+}
+
 async function viewHome() {
   const cards = [];
   const s = sport();
@@ -3680,6 +3824,7 @@ async function viewHome() {
       useSportData(id);
       const meta = state.meta;
       const generic = SPORTS[id].generic;
+      const leaders = await loadLeaders(id);
       const careerBoard = await getBoard(generic ? 'lb_career' : 'lb_career_batting');
       const seasonBoard = await getBoard(generic ? 'lb_season' : 'lb_season_batting');
       const topCareer = careerBoard.slice(0, 3);
@@ -3689,7 +3834,7 @@ async function viewHome() {
         .sort((a, b) => b.pts - a.pts).slice(0, 3);
 
       feed.push({
-        id, league: SPORTS[id].league, emoji: SPORTS[id].emoji, meta,
+        id, league: SPORTS[id].league, emoji: SPORTS[id].emoji, meta, leaders,
         topCareer, topSeason, latest, latestBest,
         href: `#/${id}/career`,
       });
@@ -3712,6 +3857,11 @@ async function viewHome() {
   });
 
   for (const f of feed) {
+    // The sport's own categories come first; fantasy points -- which are this
+    // site's construction, not the league's -- come after them.
+    const leadCard = statLeadersCard(f.id, f.leaders, f.meta);
+    if (leadCard) cards.push(leadCard);
+
     cards.push(el('article', { class: 'home-card' },
       el('div', { class: 'home-card-head' },
         el('span', { class: 'home-ball' }, f.emoji),
@@ -3832,6 +3982,10 @@ const HEALTH = [
    'Owner console: plan override, feature flags, dataset facts.',
    'Passphrase gate is convenience, not security. Same backend unlocks it ' +
    'properly.'],
+  ['Build Plan & Costs', '#/roadmap', 'live',
+   'Owner view of the work left: four phases, what each step costs, the live-' +
+   'data licensing question, and how monetisation would actually work.',
+   'A written plan, not a running system. Revisit it whenever a phase closes.'],
   ['About / Contact / Privacy / Terms', '#/about', 'live',
    'Standard site pages generated from the SITE config block.',
    'LinkedIn and Facebook URLs are still blank. Contact form endpoint unset, ' +
@@ -4249,6 +4403,349 @@ const isAdmin = () => {
   catch { return false; }
 };
 
+// ------------------------------------------------------------- build plan
+//
+// The owner's page that is not about the code: what to do next, in what order,
+// what each step costs, and which decisions have to be made by a person rather
+// than by a build script.
+//
+// Everything with a price in it is an estimate and is marked as such. Vendors
+// change pricing; the numbers here are the right order of magnitude to plan
+// with, not a quote. The one line that matters most -- a live stats licence --
+// is the one with the widest range, and the reason is explained rather than
+// averaged away.
+
+/* Phased, in the order the work actually unblocks itself. `blocked` names the
+   thing that has to exist first; `you` marks a decision only Bill can make. */
+const PLAN = [
+  {
+    phase: 'Phase 1 — Put it somewhere real',
+    why: 'Nothing else can be tested by anyone but you until the site has a URL. ' +
+         'Everything in this phase is a day of work or less and costs almost nothing.',
+    steps: [
+      { do: 'Buy the domain', detail:
+          'dynastyanalytics.com if it is free, otherwise a variant you are happy ' +
+          'saying out loud. Buy the .com even if you launch on something else — ' +
+          'it is cheap now and expensive later.',
+        cost: '$10–20/yr', you: true },
+      { do: 'Deploy the static site', detail:
+          'Cloudflare Pages, Netlify or Vercel. Point them at the repo, they build ' +
+          'on every push, and the whole site is files — no server to run. This is ' +
+          'the same thing you are looking at now, on a real address with HTTPS.',
+        cost: 'Free tier is enough' },
+      { do: 'Decide public vs. private', detail:
+          'The repo is private, which is why GitHub Pages would not serve it. ' +
+          'Cloudflare/Netlify/Vercel serve private repos on their free tiers. ' +
+          'Keep the repo private; the deployed site is what people see.',
+        you: true },
+      { do: 'Put a password on it while it is unfinished', detail:
+          'Cloudflare Access or Netlify password protection puts one shared ' +
+          'password in front of the whole site. That is how you show your dad and ' +
+          'brother without it being findable.',
+        cost: 'Free tier' },
+      { do: 'Fill in the blanks in the SITE block', detail:
+          'LinkedIn and Facebook URLs are still empty, and the contact email in ' +
+          'the code is bkaliris@gmail.com while every handle you gave me is ' +
+          'bkaliris10. Confirm which address should receive mail.',
+        you: true },
+    ],
+  },
+  {
+    phase: 'Phase 2 — Make it worth coming back to',
+    why: 'This is the churn phase. A tool people use once and abandon is a demo. ' +
+         'The three things below are what turn a lookup site into something with ' +
+         'a reason to return every week.',
+    steps: [
+      { do: 'Accounts, so settings survive', detail:
+          'Right now your league scoring lives in one browser. Clear the cache and ' +
+          'it is gone; open it on your phone and it never existed. Nobody sets up ' +
+          'a 13-category scoring system twice. This is the single highest-value ' +
+          'thing left to build.',
+        cost: '$0 → ~$25/mo', blocked: 'Needs a backend' },
+      { do: 'Import a league instead of typing it', detail:
+          'Paste an ESPN or Yahoo or Sleeper league ID and have the scoring ' +
+          'settings read themselves in. Sleeper has a documented public API and is ' +
+          'the easy one to start with. This is the feature that makes someone ' +
+          'choose you over a spreadsheet.',
+        blocked: 'Needs a backend' },
+      { do: 'Save players and get told things', detail:
+          'A watchlist, and a weekly email: "here is how your saved players did ' +
+          'under your scoring". Email is what brings people back without an app.',
+        cost: '$0 → ~$20/mo', blocked: 'Needs accounts' },
+    ],
+  },
+  {
+    phase: 'Phase 3 — Live and current-season data',
+    why: 'The hard one, and the one with a real bill attached. Read the licensing ' +
+         'panel below before committing to a vendor.',
+    steps: [
+      { do: 'Decide how current you actually need to be', detail:
+          'Yesterday’s box scores and last night’s totals are a different ' +
+          'product — and a different price — from live in-game scoring. Daily is ' +
+          'enough for almost everything this site does. Say which one you are ' +
+          'building before you shop for a feed.',
+        you: true },
+      { do: 'Pick a data source and read its terms', detail:
+          'The historical data here is free and openly licensed. Current-season ' +
+          'data is not. See the licensing panel.',
+        cost: 'See below', you: true },
+      { do: 'Add a nightly job that refreshes the season', detail:
+          'A scheduled function that pulls yesterday’s games, rescores them, ' +
+          'and writes new JSON. The site stays static and fast; only the data ' +
+          'underneath moves.',
+        cost: 'Free tier likely', blocked: 'Needs a data source' },
+    ],
+  },
+  {
+    phase: 'Phase 4 — Charge for it',
+    why: 'Deliberately last. You cannot price something until people use it, and ' +
+         'a paywall on a product nobody depends on just loses you the visit.',
+    steps: [
+      { do: 'Watch what people actually use', detail:
+          'Add privacy-friendly analytics and find out which pages get returned to. ' +
+          'Charge for the thing they come back for, not the thing you enjoyed ' +
+          'building most.',
+        cost: '~$9–19/mo' },
+      { do: 'Turn metering back on', detail:
+          'The plan machinery is still wired up — one flag in the config turns it ' +
+          'on. It is off right now on purpose.',
+        cost: 'Nothing to build' },
+      { do: 'Take payments', detail:
+          'Stripe. No monthly fee, they take a cut per transaction. Stripe Checkout ' +
+          'means you never handle a card number.',
+        cost: '~2.9% + $0.30/txn' },
+    ],
+  },
+];
+
+/* Priced separately from the plan because the question "what will this cost me
+   a month" deserves a straight answer. `when` says whether the line starts on
+   day one, only once people show up, or only if it works. */
+const COSTS = [
+  ['Domain name', 'day one', '$10–20 / year',
+   'One .com. Renews annually.'],
+  ['Static hosting', 'day one', '$0',
+   'Cloudflare Pages, Netlify or Vercel free tiers all comfortably cover a site ' +
+   'this size and this much traffic. You will not outgrow this soon.'],
+  ['Password gate while private', 'day one', '$0',
+   'Included in the same free tiers.'],
+  ['Backend / serverless functions', 'when you add accounts', '$0–20 / month',
+   'Free tiers are generous. A paid plan matters when you need more execution ' +
+   'time or want the scheduled jobs to be reliable.'],
+  ['Database', 'when you add accounts', '$0–25 / month',
+   'Supabase, Neon or Turso. Free tiers hold thousands of users; the paid step ' +
+   'is mostly about backups and not being paused when idle.'],
+  ['Sign-in', 'when you add accounts', '$0–25 / month',
+   'Clerk, Auth0 or Supabase Auth. All have free tiers into the thousands of ' +
+   'monthly users. Do not build your own password handling.'],
+  ['Transactional email', 'when you add accounts', '$0–20 / month',
+   'Resend or Postmark. Free tiers cover a few thousand sends a month, which is ' +
+   'plenty for password resets and a weekly digest.'],
+  ['Analytics', 'when you want to price it', '$0–19 / month',
+   'Plausible or Fathom. Cheap, no cookie banner, tells you what people use.'],
+  ['Payments', 'when you charge', '~2.9% + $0.30 per transaction',
+   'Stripe. No fixed monthly cost — they only earn when you do. Recurring ' +
+   'billing adds a small percentage on top.'],
+  ['Current-season sports data', 'phase 3', '$0 → $10,000+ / year',
+   'The widest range on this list by far, and the one to research properly. ' +
+   'See the licensing panel.'],
+  ['An AI assistant that is a real model', 'optional', 'per-use, cents to dollars',
+   'The assistant on this site today is rule-based and free to run. A language ' +
+   'model would answer far more, but needs a backend to hold the API key and ' +
+   'costs per question.'],
+  ['Business formation', 'before you take money', '$50–800 one-off + annual',
+   'An LLC in Massachusetts. Filing fee plus an annual report. A registered ' +
+   'agent service is optional. Talk to an accountant before you take revenue.'],
+  ['Trademark', 'only if it works', '$250–350 per class + legal',
+   'Federal registration for the name. Not urgent; matters once there is ' +
+   'something worth defending.'],
+];
+
+/* The single most expensive decision on the page, so it gets its own panel
+   rather than a line in a table. */
+const LIVE_DATA = [
+  ['What you have now is free and clean',
+   'Lahman/Chadwick for baseball, nflverse for football, and the hoopR/' +
+   'sportsdataverse republication of NBA Stats for basketball. All openly ' +
+   'published, all fine to use. They are historical — they stop at the end of a ' +
+   'season and are updated by volunteers on their own schedule.'],
+  ['The cheap tier of live data',
+   'API-Sports, MySportsFeeds, balldontlie and similar sell current-season and ' +
+   'in-game data in the tens of dollars a month. Coverage and reliability vary, ' +
+   'and you must read whether their licence permits a commercial product rather ' +
+   'than personal use. This is where to start, and it may be all you ever need.'],
+  ['The expensive tier',
+   'Sportradar, Stats Perform and SportsDataIO are the official and near-official ' +
+   'feeds. Real-time, reliable, and priced for businesses — commonly thousands to ' +
+   'tens of thousands a year, per sport. You do not need this to launch, and you ' +
+   'should not sign one until customers are paying you.'],
+  ['The one nobody admits to using',
+   'The public MLB Stats endpoint and ESPN’s internal JSON are open in the ' +
+   'sense that a browser can reach them. They are not licensed for you to build ' +
+   'a commercial product on, they change without notice, and building on them is ' +
+   'a business risk rather than a technical one. Fine for a prototype. Not a ' +
+   'foundation.'],
+  ['What the law actually protects',
+   'Statistics are facts, and facts are not copyrightable. A US appeals court ' +
+   'held in C.B.C. Distribution v. MLB Advanced Media (2007) that using players’ ' +
+   'names and statistics for fantasy games is protected. What is not yours: team ' +
+   'logos, club names as branding, player photographs, and anything you agreed ' +
+   'to in a site’s terms of service when you took their data. Publishing ' +
+   'numbers is one question; how you obtained them is a separate one.'],
+];
+
+/* Monetisation, written as mechanics rather than aspiration. */
+const MONEY = [
+  ['How the money actually moves',
+   'Stripe Checkout hosts the payment page, so a card number never touches your ' +
+   'site. Someone pays, Stripe sends your backend a webhook saying so, you flip a ' +
+   'flag on their account, and the API starts returning the paid data. The ' +
+   'important half is that last step: the paywall on this site today is in the ' +
+   'browser, which decides what the interface offers — not what a determined ' +
+   'person can reach. Real paid access means the data lives behind an endpoint ' +
+   'that checks who is asking.'],
+  ['What to charge for',
+   'Gate depth and convenience, never the front door. Free should be genuinely ' +
+   'useful: search anyone, see any career, set your scoring. Paid is the things ' +
+   'that save a returning user time — saved leagues on every device, league ' +
+   'import, exports, projections, the weekly email, more than two players ' +
+   'compared at once.'],
+  ['What to price it at',
+   'Somewhere around $4–8 a month, or a season pass in the $25–40 range. The ' +
+   'season pass is the better instinct for this product, and the reason is the ' +
+   'next point.'],
+  ['Churn is the whole problem in fantasy sports',
+   'Fantasy is seasonal. A monthly subscription to a baseball tool gets cancelled ' +
+   'in October by someone who was perfectly happy with it — that is not ' +
+   'dissatisfaction, it is the calendar. Three things fight it: sell a season or ' +
+   'a year rather than a month; carry all three sports so the quiet months for ' +
+   'one are the loud months for another; and store something the user built — ' +
+   'their scoring settings, their watchlist, their league — because leaving means ' +
+   'abandoning it. This is the argument for doing Phase 2 before Phase 4.'],
+  ['Ways to earn that are not subscriptions',
+   'Display advertising pays poorly at small scale and makes the site worse — ' +
+   'the slots exist in the code and are switched off. A one-off "draft kit" sold ' +
+   'in the pre-season fits the seasonality better than a subscription. Affiliate ' +
+   'links to sportsbooks pay well and carry regulatory and reputational baggage; ' +
+   'that is a decision, not an integration.'],
+];
+
+/* Things that are neither code nor cost. */
+const THINK = [
+  ['Who is this for, precisely',
+   'Right now it is for people in a points league who want to know how a player ' +
+   'would score under their own rules. That is a real and underserved question. ' +
+   'Say it in one sentence and let it decide what you build next.'],
+  ['What makes it hard to copy',
+   'Not the data — anyone can download Lahman. The moat is the scoring engine ' +
+   'plus league import plus the fact that a returning user’s settings are ' +
+   'already there. Three sports under one set of rules is a real differentiator; ' +
+   'most tools do one.'],
+  ['Say where the numbers came from',
+   'You already do, on every page. Keep doing it. It is the difference between a ' +
+   'site people trust with a draft and a site people check against another one.'],
+  ['Terms, privacy and a business entity',
+   'The pages exist and are generated from your config. They currently name ' +
+   'Kaliris Labs, which is not yet a registered company. Form the LLC before you ' +
+   'take a single payment, not after.'],
+  ['Support is a real cost',
+   'Once people pay, they email you. Decide now whether that is a support inbox ' +
+   'you check on a schedule or your personal address, because it will not stay ' +
+   'small if this works.'],
+  ['These owner pages are not access-controlled',
+   'System Health, Admin Console and this page are hidden from the navigation, ' +
+   'not protected. Anyone who types the URL can read them. That is fine for a ' +
+   'prototype and must change before launch — it is the same backend that fixes ' +
+   'the paywall.'],
+];
+
+function viewRoadmap() {
+  const done = HEALTH.filter(([, , st]) => st === 'live').length;
+  const stepCount = PLAN.reduce((n, p) => n + p.steps.length, 0);
+  const decisions = PLAN.reduce((n, p) => n + p.steps.filter((s) => s.you).length, 0);
+
+  const planPanels = PLAN.map((p) => el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, p.phase),
+      el('span', { class: 'hint' }, p.why)),
+    el('ol', { class: 'plan-steps' },
+      p.steps.map((st) => el('li', { class: `plan-step${st.you ? ' decision' : ''}` },
+        el('div', { class: 'plan-step-head' },
+          el('b', {}, st.do),
+          st.cost ? el('span', { class: 'plan-cost' }, st.cost) : null),
+        el('p', {}, st.detail),
+        el('div', { class: 'plan-tags' },
+          st.you ? el('span', { class: 'plan-tag you' }, 'Your call') : null,
+          st.blocked ? el('span', { class: 'plan-tag blocked' }, st.blocked) : null)))),
+    watermark()));
+
+  const costPanel = el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, 'What you would pay for'),
+      el('span', { class: 'hint' },
+        'Estimates, not quotes — confirm current pricing before you commit')),
+    statTable(COSTS.map(([item, when, cost, note]) => ({ item, when, cost, note })), [
+      { key: 'item', label: 'Line item', cls: 'txt' },
+      { key: 'when', label: 'Starts', cls: 'txt' },
+      { key: 'cost', label: 'Estimate', cls: 'txt' },
+      { key: 'note', label: 'What it buys', cls: 'txt' },
+    ], { sortKey: null }),
+    el('div', { class: 'note', html:
+      '<b>The realistic number.</b> Phase 1 is about <b>$20 for the year</b> — a ' +
+      'domain, on free hosting. Adding accounts and email takes it to roughly ' +
+      '<b>$0–70 a month</b> depending on how much you lean on free tiers. Live ' +
+      'data is the only line that can change the shape of the business, which is ' +
+      'why it is worth deciding what "live" means to you before you shop.' }),
+    watermark());
+
+  const section = (title, hint, entries) => el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' }, el('h2', {}, title),
+      el('span', { class: 'hint' }, hint)),
+    el('div', { class: 'health-list' },
+      entries.map(([head, body]) => el('div', { class: 'health-item' },
+        el('div', { class: 'health-head' }, el('span', { class: 'health-name' }, head)),
+        el('p', { class: 'health-what' }, body)))),
+    watermark());
+
+  swap(app(),
+    el('div', { class: 'view-head' },
+      el('h1', {}, 'Build Plan & Costs'),
+      el('p', {}, 'Owner view. What to do next, in order, with what each step ' +
+        'costs and which calls only you can make.')),
+
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' }, el('h2', {}, 'Where this stands')),
+      el('div', { class: 'tiles' },
+        tile('Surfaces live', String(done), `of ${HEALTH.length} built and running`, true),
+        tile('Steps to launch', String(stepCount), 'across four phases'),
+        tile('Your decisions', String(decisions), 'nobody else can make these'),
+        tile('Day-one cost', '~$20', 'a domain, on free hosting')),
+      el('div', { class: 'note', html:
+        '<b>Read this first.</b> The product is further along than the business. ' +
+        'Every league’s data is loaded and accurate, the scoring engine works, ' +
+        'and the site runs on a phone. What does not exist is anything that ' +
+        'remembers a person: no accounts, no saved leagues, no server. Almost ' +
+        'everything left — real paid access, live stats, the weekly email, an AI ' +
+        'that is a real model — is blocked on that same missing piece, and it is ' +
+        'one small backend rather than four separate projects.' }),
+      watermark()),
+
+    ...planPanels,
+    costPanel,
+    section('Live stats: what it takes and what it costs',
+      'The decision with the widest price range on this page', LIVE_DATA),
+    section('Monetisation, mechanically',
+      'How the money moves, what to gate, and the churn problem', MONEY),
+    section('Things to think about',
+      'Not code, and not optional', THINK),
+
+    el('div', { class: 'note', html:
+      `<b>Last reviewed.</b> Written against the build dated ` +
+      `${state.meta?.built || 'today'}. Vendor pricing moves; treat every figure ` +
+      'here as an order of magnitude to plan with, and confirm before you sign ' +
+      'anything. Nothing on this page is legal or financial advice.' }));
+}
+
 function viewAdmin() {
   if (!isAdmin()) {
     const input = el('input', { type: 'password', placeholder: 'Passphrase',
@@ -4514,7 +5011,10 @@ function go(hash) {
 
 async function route() {
   const raw = location.hash.replace(/^#\/?/, '') || 'home';
-  const [path] = raw.split('?');
+  const [path, search] = raw.split('?');
+  // #/mlb/career?sort=HR&group=pitching -- so a card, a share or a bookmark can
+  // land on a board already sorted by the column the reader came for.
+  state.query = Object.fromEntries(new URLSearchParams(search || ''));
   const parts = path.split('/');
 
   // Routes are #/<sport>/<view>/<arg>. A first segment that is not a known
@@ -4579,6 +5079,7 @@ async function route() {
       case 'ask':     viewAsk(); break;
       case 'admin':   viewAdmin(); break;
       case 'health':  await viewHealth(); break;
+      case 'roadmap': viewRoadmap(); break;
       case 'home':    await viewHome(); break;
       case 'chat':    viewChat(); break;
       default:        await viewHome();
