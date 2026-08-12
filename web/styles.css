@@ -1255,6 +1255,50 @@ select:focus, input:focus, textarea:focus {
   .stint-years { font-size: 11.5px; }
 }
 
+/* ------------------------------------------------------------ league sync
+ * The page that removes the data entry: pick a platform, give it an id or
+ * paste your settings, see exactly what was read before anything changes.
+ */
+.sync-body { padding: 16px 18px 18px; text-align: left; }
+.sync-label {
+  display: block; margin: 14px 0 6px;
+  font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--text-faint);
+}
+.sync-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.sync-input {
+  flex: 1 1 260px; min-width: 0;
+  padding: 9px 12px; font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+}
+.sync-paste {
+  width: 100%; min-height: 190px; resize: vertical;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.6;
+  padding: 12px 14px; white-space: pre;
+}
+.sync-hint { display: block; margin-top: 8px; line-height: 1.6; font-style: italic; }
+.sync-actions {
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  padding: 14px 18px; border-top: 1px solid var(--border);
+}
+.sync-body .sync-actions { padding: 14px 0 0; border-top: 0; }
+.sync-provider-note {
+  display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap;
+  padding: 12px 14px; margin-bottom: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunk); border: 1px solid var(--border);
+  font-size: 12.5px; color: var(--text-muted); line-height: 1.65;
+}
+.sync-provider-note > span:last-child { flex: 1 1 220px; min-width: 0; }
+.sync-status:not(:empty) { margin-top: 4px; }
+.sync-status .boot-spinner { margin: 18px auto; }
+
+@media (max-width: 560px) {
+  .sync-body { padding: 14px; }
+  .sync-row { flex-direction: column; align-items: stretch; }
+  .sync-row .btn { width: 100%; }
+}
+
 /* ------------------------------------------------------------- build plan
  * The owner's roadmap: numbered steps, an estimate on the ones that cost
  * money, and a tag on the ones nobody but Bill can decide.

@@ -655,6 +655,147 @@ async function serve() {
     await ctx.close();
   }
 
+  // ---------------------------------------------------------- league sync
+  //
+  // The importer is the product's whole argument -- nobody types a 13-category
+  // scoring system in by hand twice -- so it is checked against the real
+  // response shape of each platform and against the ways a pasted settings
+  // page is actually formatted.
+  console.log('\n— league sync —');
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+    const sp = await ctx.newPage();
+    const errs = [];
+    sp.on('pageerror', (e) => errs.push(e.message));
+    await sp.goto(`${BASE}/#/nfl/sync`, { waitUntil: 'networkidle' });
+    await sp.waitForTimeout(1500);
+
+    const chips = await sp.$$eval('.lead-chip', (n) => n.map((x) => x.textContent.trim()));
+    if (chips.length !== 4) fail('sync', `${chips.length} providers offered: ${chips.join()}`);
+    else ok('sync', `providers offered: ${chips.join(', ')}`);
+
+    // --- Sleeper, against its documented response shape -------------------
+    const sleeper = await sp.evaluate(() => {
+      const p = SYNC_PROVIDERS.find((x) => x.id === 'sleeper');
+      return p.parse({
+        name: 'The Dynasty', total_rosters: 12,
+        roster_positions: ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'K', 'DEF', 'BN', 'BN'],
+        scoring_settings: {
+          pass_yd: 0.04, pass_td: 4, pass_int: -2, rush_yd: 0.1, rush_td: 6,
+          rec: 0.5, rec_yd: 0.1, rec_td: 6, fum_lost: -2, fgm_40_49: 4, xpm: 1,
+        },
+      }, 'nfl');
+    });
+    const sOk = sleeper.scoring.PassYd === 0.04 && sleeper.scoring.PassTD === 4
+      && sleeper.scoring.Rec === 0.5 && sleeper.scoring.Int === -2
+      && sleeper.leagueName === 'The Dynasty' && sleeper.teams === 12
+      && !sleeper.roster.includes('BN');
+    if (!sOk) fail('sync', `sleeper parse: ${JSON.stringify(sleeper).slice(0, 200)}`);
+    else ok('sync', `sleeper: ${Object.keys(sleeper.scoring).length} categories, ` +
+      `kicker rules set aside (${sleeper.unmapped.length}), bench dropped`);
+
+    // --- ESPN, against its scoringItems shape -----------------------------
+    const espn = await sp.evaluate(() => {
+      const p = SYNC_PROVIDERS.find((x) => x.id === 'espn');
+      return p.parse({ settings: {
+        name: 'Public League', size: 10,
+        scoringSettings: { scoringItems: [
+          { statId: 3, points: 0.04 }, { statId: 4, points: 4 },
+          { statId: 20, points: -2 }, { statId: 24, points: 0.1 },
+          { statId: 25, points: 6 }, { statId: 53, points: 1 },
+          { statId: 42, points: 0.1 }, { statId: 43, points: 6 },
+          { statId: 999, points: 3 },
+        ] },
+        rosterSettings: { lineupSlotCounts: { 0: 1, 2: 2, 4: 2, 6: 1, 20: 7 } },
+      } }, 'nfl');
+    });
+    const eOk = espn.scoring.PassYd === 0.04 && espn.scoring.Rec === 1
+      && espn.scoring.RecTD === 6 && espn.teams === 10 && espn.unmapped.length === 1;
+    if (!eOk) fail('sync', `espn parse: ${JSON.stringify(espn).slice(0, 200)}`);
+    else ok('sync', `espn: full-PPR read correctly, 1 unknown stat id surfaced`);
+
+    // --- Yahoo, whose JSON nests stat modifiers at a moving depth ---------
+    const yahoo = await sp.evaluate(() => {
+      const p = SYNC_PROVIDERS.find((x) => x.id === 'yahoo');
+      return p.parse({ fantasy_content: { league: [{}, { settings: [{
+        stat_modifiers: { stats: [
+          { stat: { stat_id: '4', value: '0.04' } },
+          { stat: { stat_id: '5', value: '4' } },
+          { stat: { stat_id: '6', value: '-1' } },
+          { stat: { stat_id: '11', value: '0.5' } },
+          { stat: { stat_id: '13', value: '6' } },
+        ] },
+      }] }] } }, 'nfl');
+    });
+    const yOk = yahoo.scoring.PassYd === 0.04 && yahoo.scoring.PassTD === 4
+      && yahoo.scoring.Rec === 0.5 && yahoo.scoring.RecTD === 6;
+    if (!yOk) fail('sync', `yahoo parse: ${JSON.stringify(yahoo).slice(0, 200)}`);
+    else ok('sync', 'yahoo: modifiers found through a nested response');
+
+    // --- the paste reader, which is the one that has to survive anything ---
+    const paste = await sp.evaluate(() => ({
+      plain: parsePastedScoring(
+        'Passing Yards   0.04\nPassing TD   4\nInterceptions   -2\n' +
+        'Rushing Yards  0.1\nRushing TD  6\nReceptions  0.5\n' +
+        'Receiving Yards 0.1\nReceiving TD 6\nFumbles Lost -2', 'nfl'),
+      perUnit: parsePastedScoring(
+        '1 point per 25 passing yards\nEvery 10 rushing yards = 1 point\n' +
+        'Passing Touchdowns: 4\nReceptions (per 1) 0.5', 'nfl'),
+      twoLine: parsePastedScoring(
+        'Points\n1\nRebounds\n1.2\nAssists\n1.5\nThree Point Field Goals Made\n0.5\n' +
+        'Field Goals Made\n1', 'nba'),
+      noise: parsePastedScoring(
+        'MY LEAGUE 2024 SETTINGS\nCommissioner: Bill\n12 teams, head to head points\n' +
+        'Home Runs 3\nStolen Bases 2\nRuns Batted In 1\nStrikeouts 1\nEarned Runs -1', 'mlb'),
+    }));
+    const checks = [
+      ['plain half-PPR', paste.plain.scoring.PassYd === 0.04 && paste.plain.scoring.Rec === 0.5
+        && paste.plain.scoring.FumLost === -2],
+      ['"per 25 yards" phrasing', paste.perUnit.scoring.PassYd === 0.04
+        && Math.abs(paste.perUnit.scoring.RushYd - 0.1) < 1e-9
+        && paste.perUnit.scoring.PassTD === 4],
+      ['category and value on separate lines', paste.twoLine.scoring.PTS === 1
+        && paste.twoLine.scoring.REB === 1.2 && paste.twoLine.scoring.AST === 1.5],
+      ['threes not swallowed by field goals', paste.twoLine.scoring.FG3M === 0.5
+        && paste.twoLine.scoring.FGM === 1],
+      ['header noise ignored', paste.noise.scoring.HR === 3 && paste.noise.scoring.SB === 2
+        && paste.noise.scoring.RBI === 1 && paste.noise.scoring.K === 1],
+    ];
+    for (const [label, good] of checks) {
+      if (!good) fail('sync', `paste reader: ${label}`);
+      else ok('sync', `paste reader handles ${label}`);
+    }
+
+    // --- applying a sync must actually move the boards --------------------
+    await sp.goto(`${BASE}/#/nba/sync`, { waitUntil: 'networkidle' });
+    await sp.waitForTimeout(1200);
+    await sp.click('.lead-chip:text-is("Any other platform")');
+    await sp.waitForTimeout(300);
+    await sp.fill('.sync-paste', 'Points 1\nRebounds 1\nAssists 1\nSteals 1\nBlocks 1\n' +
+      'Turnovers 0\nThree Pointers Made 0\nField Goals Made 0\nField Goals Attempted 0\n' +
+      'Free Throws Made 0\nFree Throws Attempted 0');
+    await sp.click('.btn.primary:text-is("Read this")');
+    await sp.waitForTimeout(500);
+    const previewRows = await sp.$$eval('table.stats tbody tr', (n) => n.length);
+    if (previewRows < 8) fail('sync', `preview showed ${previewRows} categories`);
+    else ok('sync', `preview shows ${previewRows} categories before anything changes`);
+
+    await sp.click('.btn.primary:text-is("Use this scoring for NBA")');
+    await sp.waitForTimeout(1800);
+    // Straight per-possession scoring: the leader becomes a volume big man
+    // rather than a scoring guard, and the board must reflect it immediately.
+    const applied = await sp.evaluate(() => ({
+      custom: !!(JSON.parse(localStorage.getItem('da-scoring') || '{}').nba),
+      top: (document.querySelector('table.stats tbody tr td:nth-child(2)') || {}).textContent,
+    }));
+    if (!applied.custom) fail('sync', 'applying the sync did not persist the scoring');
+    else ok('sync', `sync applied and stored; board now led by ${applied.top}`);
+
+    await sp.evaluate(() => localStorage.removeItem('da-scoring'));
+    if (errs.length) fail('sync', errs.join('|'));
+    await ctx.close();
+  }
+
   // ------------------------------------------------------- category leaders
   //
   // The home page leads with each league's own statistics. These are checked
@@ -914,7 +1055,8 @@ async function serve() {
                   '#/scoring', '#/about', '#/contact', '#/privacy', '#/terms',
                   '#/pricing', '#/nba/player', '#/nba/scoring', '#/nfl/career', '#/nfl/scoring',
                   '#/health', '#/roadmap', '#/mlb/chat', '#/nfl/chat', '#/nba/career',
-                  '#/settings', '#/nba/career?sort=AST', '#/mlb/career?sort=SV&group=pitching'];
+                  '#/settings', '#/nba/career?sort=AST', '#/mlb/career?sort=SV&group=pitching',
+                  '#/mlb/sync', '#/nfl/sync'];
   const DEVICES = [
     [360, 800, 'android-small', true],   // Galaxy S-class
     [390, 844, 'iphone', true],          // iPhone 14/15

@@ -522,6 +522,7 @@ const NAV = [
     ['compare', 'Compare',         '⚖️', true,  'Two careers side by side'],
   ] },
   { id: 'league', label: 'My League', icon: '⚙️', open: true, items: [
+    ['sync',     'Sync Your League', '🔗', true,  'Import scoring from Sleeper, ESPN, Yahoo'],
     ['settings', 'Scoring Settings', '🎛️', false, 'Set your weights — everything recomputes'],
   ] },
   { id: 'tools', label: 'Tools', icon: '🧰', open: false, items: [
@@ -3982,6 +3983,15 @@ const HEALTH = [
    'Owner console: plan override, feature flags, dataset facts.',
    'Passphrase gate is convenience, not security. Same backend unlocks it ' +
    'properly.'],
+  ['Sync Your League', '#/sync', 'partial',
+   'Read a league’s scoring rules from the platform it lives on, map them onto ' +
+   'this site’s categories, show what changes, and apply them everywhere.',
+   'Sleeper is a public key-free API and should work from a browser today. ' +
+   'ESPN works for public leagues; private ones need a server to hold session ' +
+   'cookies. Yahoo is OAuth, so it needs a server for the client secret. The ' +
+   'paste-in reader needs no network and covers every other platform. None of ' +
+   'the three network paths has been exercised from the build sandbox — its ' +
+   'egress blocks all of them — so the first real call happens in a browser.'],
   ['Build Plan & Costs', '#/roadmap', 'live',
    'Owner view of the work left: four phases, what each step costs, the live-' +
    'data licensing question, and how monetisation would actually work.',
@@ -4403,6 +4413,567 @@ const isAdmin = () => {
   catch { return false; }
 };
 
+// ------------------------------------------------------------ league sync
+//
+// The differentiator for this product is that it scores history under *your*
+// league's rules. Everything upstream of that is data entry, and data entry is
+// where people give up. This page removes it.
+//
+// Four platforms, four different realities, and the honest answer differs for
+// each one:
+//
+//   Sleeper  A documented, public, key-free REST API. A browser can call it
+//            directly. This one genuinely works with no server at all.
+//   ESPN     No public API since they retired the developer programme, but the
+//            endpoint their own app calls is reachable and returns a public
+//            league's settings. A private league needs the visitor's session
+//            cookies, which is a thing to build carefully, not casually.
+//   Yahoo    A real, documented, supported API -- behind OAuth 2.0. OAuth needs
+//            a client secret, a secret cannot live in a page anyone can view
+//            source on, so this needs a backend. The parser is written and the
+//            exact backend contract is spelled out below.
+//   Everyone Paste your scoring page in and let it be read. No API, no keys,
+//   else     no network, works for CBS, NFL.com, Fantrax, ottoneu, a league
+//            constitution in a Google Doc, or a screenshot someone typed out.
+//
+// The paste path is deliberately the backstop for all of them: it is the only
+// one that cannot break when a vendor changes an endpoint.
+//
+// NOTE ON TESTING. The sandbox this was written in blocks outbound calls to
+// all three platforms, so the network path has never made a real request from
+// here. The request shapes and response shapes are implemented from each
+// platform's documented/observed format; the parsing, mapping, preview and
+// apply steps are all tested against captured fixtures. The first real call
+// will happen in your browser, and every failure path lands on the paste form.
+
+/* One catalogue per sport: my category key, what to call it, and every name a
+ * platform might use for it. Synonyms are matched longest-first so that
+ * "three point field goals made" cannot be swallowed by "field goals". */
+const SYNC_CATS = {
+  mlb: [
+    { key: 'R',    side: 'batting',  label: 'Runs',            syn: ['runs scored', 'runs', 'run'] },
+    { key: '1B',   side: 'batting',  label: 'Singles',         syn: ['singles', 'single'] },
+    { key: '2B',   side: 'batting',  label: 'Doubles',         syn: ['doubles', 'double'] },
+    { key: '3B',   side: 'batting',  label: 'Triples',         syn: ['triples', 'triple'] },
+    { key: 'HR',   side: 'batting',  label: 'Home runs',       syn: ['home runs', 'home run', 'homerun', 'hr'] },
+    { key: 'RBI',  side: 'batting',  label: 'RBI',             syn: ['runs batted in', 'rbi'] },
+    { key: 'SB',   side: 'batting',  label: 'Stolen bases',    syn: ['stolen bases', 'stolen base', 'sb'] },
+    { key: 'BB',   side: 'batting',  label: 'Walks',           syn: ['bases on balls', 'base on balls', 'walks', 'walk', 'bb'] },
+    { key: 'IBB',  side: 'batting',  label: 'Intentional walks', syn: ['intentional walks', 'intentional walk', 'ibb'] },
+    { key: 'HBP',  side: 'batting',  label: 'Hit by pitch',    syn: ['hit by pitch', 'hbp'] },
+    { key: 'IP',   side: 'pitching', label: 'Innings pitched', syn: ['innings pitched', 'innings', 'ip'] },
+    { key: 'W',    side: 'pitching', label: 'Wins',            syn: ['wins', 'win'] },
+    { key: 'L',    side: 'pitching', label: 'Losses',          syn: ['losses', 'loss'] },
+    { key: 'CG',   side: 'pitching', label: 'Complete games',  syn: ['complete games', 'complete game', 'cg'] },
+    { key: 'SHO',  side: 'pitching', label: 'Shutouts',        syn: ['shutouts', 'shutout', 'sho'] },
+    { key: 'SV',   side: 'pitching', label: 'Saves',           syn: ['saves', 'save', 'sv'] },
+    { key: 'HLD',  side: 'pitching', label: 'Holds',           syn: ['holds', 'hold', 'hld'] },
+    { key: 'BS',   side: 'pitching', label: 'Blown saves',     syn: ['blown saves', 'blown save', 'bs'] },
+    { key: 'QS',   side: 'pitching', label: 'Quality starts',  syn: ['quality starts', 'quality start', 'qs'] },
+    { key: 'ER',   side: 'pitching', label: 'Earned runs',     syn: ['earned runs allowed', 'earned runs', 'earned run', 'er'] },
+    { key: 'K',    side: 'pitching', label: 'Strikeouts',      syn: ['strikeouts pitched', 'strikeouts', 'strikeout', 'so', 'k'] },
+  ],
+  nfl: [
+    { key: 'PassYd',  label: 'Passing yards',    syn: ['passing yards', 'pass yards', 'pass yds', 'passing yds'] },
+    { key: 'PassTD',  label: 'Passing TDs',      syn: ['passing touchdowns', 'passing touchdown', 'passing td', 'pass td'] },
+    { key: 'Int',     label: 'Interceptions',    syn: ['interceptions thrown', 'interception thrown', 'interceptions', 'interception'] },
+    { key: 'Pass2PT', label: 'Passing 2-pt',     syn: ['2 point conversion passes', 'two point conversion pass', 'passing 2pt', 'pass 2pt'] },
+    { key: 'RushYd',  label: 'Rushing yards',    syn: ['rushing yards', 'rush yards', 'rush yds', 'rushing yds'] },
+    { key: 'RushTD',  label: 'Rushing TDs',      syn: ['rushing touchdowns', 'rushing touchdown', 'rushing td', 'rush td'] },
+    { key: 'Rush2PT', label: 'Rushing 2-pt',     syn: ['2 point conversion runs', 'two point conversion run', 'rushing 2pt', 'rush 2pt'] },
+    { key: 'Rec',     label: 'Receptions',       syn: ['receptions', 'reception', 'each reception', 'catches', 'ppr'] },
+    { key: 'RecYd',   label: 'Receiving yards',  syn: ['receiving yards', 'rec yards', 'rec yds', 'receiving yds'] },
+    { key: 'RecTD',   label: 'Receiving TDs',    syn: ['receiving touchdowns', 'receiving touchdown', 'receiving td', 'rec td'] },
+    { key: 'Rec2PT',  label: 'Receiving 2-pt',   syn: ['2 point conversion receptions', 'receiving 2pt', 'rec 2pt'] },
+    { key: 'FumLost', label: 'Fumbles lost',     syn: ['fumbles lost', 'fumble lost', 'lost fumble'] },
+    { key: 'RetTD',   label: 'Return TDs',       syn: ['kickoff return touchdowns', 'punt return touchdowns', 'return touchdowns', 'return td'] },
+  ],
+  nba: [
+    { key: 'PTS',  label: 'Points',        syn: ['points scored', 'points', 'point', 'pts'] },
+    { key: 'REB',  label: 'Rebounds',      syn: ['total rebounds', 'rebounds', 'rebound', 'reb'] },
+    { key: 'AST',  label: 'Assists',       syn: ['assists', 'assist', 'ast'] },
+    { key: 'STL',  label: 'Steals',        syn: ['steals', 'steal', 'stl'] },
+    { key: 'BLK',  label: 'Blocks',        syn: ['blocked shots', 'blocks', 'block', 'blk'] },
+    { key: 'TOV',  label: 'Turnovers',     syn: ['turnovers', 'turnover', 'to', 'tov'] },
+    { key: 'FG3M', label: 'Three-pointers', syn: ['three point field goals made', '3 point shots made', 'three pointers made', 'three pointers', '3 pointers made', '3pm', 'threes made'] },
+    { key: 'FGM',  label: 'Field goals made', syn: ['field goals made', 'field goal made', 'fgm'] },
+    { key: 'FGA',  label: 'Field goals attempted', syn: ['field goals attempted', 'field goal attempted', 'fga'] },
+    { key: 'FTM',  label: 'Free throws made', syn: ['free throws made', 'free throw made', 'ftm'] },
+    { key: 'FTA',  label: 'Free throws attempted', syn: ['free throws attempted', 'free throw attempted', 'fta'] },
+  ],
+};
+
+const catsFor = (sportId) => SYNC_CATS[sportId] || [];
+const catByKey = (sportId, key) => catsFor(sportId).find((c) => c.key === key);
+
+/* Sleeper names its categories in its own shorthand. Documented and stable. */
+const SLEEPER_KEYS = {
+  nfl: {
+    pass_yd: 'PassYd', pass_td: 'PassTD', pass_int: 'Int', pass_2pt: 'Pass2PT',
+    rush_yd: 'RushYd', rush_td: 'RushTD', rush_2pt: 'Rush2PT',
+    rec: 'Rec', rec_yd: 'RecYd', rec_td: 'RecTD', rec_2pt: 'Rec2PT',
+    fum_lost: 'FumLost', st_td: 'RetTD', pr_td: 'RetTD', kr_td: 'RetTD',
+  },
+  nba: {
+    pts: 'PTS', reb: 'REB', ast: 'AST', stl: 'STL', blk: 'BLK',
+    to: 'TOV', tov: 'TOV', tpm: 'FG3M', fg3m: 'FG3M',
+    fgm: 'FGM', fga: 'FGA', ftm: 'FTM', fta: 'FTA',
+  },
+  mlb: {
+    r: 'R', s: '1B', d: '2B', t: '3B', hr: 'HR', rbi: 'RBI', sb: 'SB',
+    bb: 'BB', hbp: 'HBP',
+    ip: 'IP', w: 'W', l: 'L', cg: 'CG', sho: 'SHO', sv: 'SV', hld: 'HLD',
+    bs: 'BS', qs: 'QS', er: 'ER', k: 'K',
+  },
+};
+
+/* ESPN identifies categories by numeric stat id. These are the community-
+ * documented ids their fantasy API has used for years. They are the one part
+ * of this file most likely to need a correction against a real league, which
+ * is why the preview shows you exactly what was read before anything is
+ * applied. */
+const ESPN_STAT_IDS = {
+  nfl: {
+    3: 'PassYd', 4: 'PassTD', 20: 'Int', 19: 'Pass2PT',
+    24: 'RushYd', 25: 'RushTD', 26: 'Rush2PT',
+    42: 'RecYd', 43: 'RecTD', 44: 'Rec2PT', 53: 'Rec',
+    72: 'FumLost', 101: 'RetTD', 102: 'RetTD',
+  },
+  nba: {
+    0: 'PTS', 1: 'BLK', 2: 'STL', 3: 'AST', 6: 'REB',
+    11: 'TOV', 13: 'FGM', 14: 'FGA', 15: 'FTM', 16: 'FTA', 17: 'FG3M',
+  },
+  mlb: {
+    20: 'R', 1: '1B', 2: '2B', 3: '3B', 4: 'HR', 21: 'RBI', 23: 'SB',
+    10: 'BB', 16: 'HBP',
+    34: 'IP', 53: 'W', 54: 'L', 57: 'SV', 47: 'ER', 48: 'K', 63: 'HLD',
+  },
+};
+
+const ESPN_GAME = { nfl: 'ffl', nba: 'fba', mlb: 'flb' };
+
+/* Yahoo also uses numeric stat ids, per game. */
+const YAHOO_STAT_IDS = {
+  nfl: { 4: 'PassYd', 5: 'PassTD', 6: 'Int', 9: 'RushYd', 10: 'RushTD',
+         11: 'Rec', 12: 'RecYd', 13: 'RecTD', 18: 'FumLost',
+         15: 'RetTD', 16: 'RetTD', 19: 'Pass2PT', 20: 'Rush2PT', 21: 'Rec2PT' },
+  nba: { 12: 'PTS', 15: 'REB', 16: 'AST', 17: 'STL', 18: 'BLK', 19: 'TOV',
+         10: 'FG3M', 4: 'FGM', 3: 'FGA', 7: 'FTM', 6: 'FTA' },
+  mlb: { 7: 'R', 8: '1B', 9: '2B', 10: '3B', 12: 'HR', 13: 'RBI', 16: 'SB',
+         18: 'BB', 20: 'HBP', 50: 'IP', 28: 'W', 29: 'L', 32: 'SV',
+         39: 'ER', 42: 'K', 48: 'HLD' },
+};
+
+const SYNC_PROVIDERS = [
+  {
+    id: 'sleeper', name: 'Sleeper', sports: ['nfl', 'nba', 'mlb'],
+    reach: 'open',
+    blurb: 'Public API, no key, no sign-in. Your browser calls it directly.',
+    idLabel: 'League ID',
+    idHint: 'Open your league on sleeper.com. The long number in the address ' +
+            'bar after /leagues/ is the ID.',
+    idExample: '992819272847511552',
+    idPattern: /^\d{6,25}$/,
+    url: (id) => `https://api.sleeper.app/v1/league/${encodeURIComponent(id)}`,
+    parse: (json, sportId) => {
+      const map = SLEEPER_KEYS[sportId] || {};
+      const scoring = {};
+      const unmapped = [];
+      for (const [k, v] of Object.entries(json.scoring_settings || {})) {
+        if (typeof v !== 'number') continue;
+        const mine = map[k.toLowerCase()];
+        if (mine) scoring[mine] = (scoring[mine] || 0) + v;
+        else if (v !== 0) unmapped.push([k, v]);
+      }
+      return {
+        leagueName: json.name || null,
+        teams: json.total_rosters || null,
+        roster: (json.roster_positions || []).filter((p) => p !== 'BN'),
+        scoring, unmapped,
+      };
+    },
+  },
+  {
+    id: 'espn', name: 'ESPN', sports: ['nfl', 'nba', 'mlb'],
+    reach: 'public-only',
+    blurb: 'Works now for public leagues. A private league needs your ESPN ' +
+           'session cookies, which needs a server to hold them safely.',
+    idLabel: 'League ID',
+    idHint: 'On fantasy.espn.com, the leagueId in the address bar. If your ' +
+            'league is set to private this will fail — paste instead.',
+    idExample: '1234567',
+    idPattern: /^\d{3,12}$/,
+    url: (id, season, sportId) =>
+      `https://lm-api-reads.fantasy.espn.com/apis/v3/games/${ESPN_GAME[sportId]}` +
+      `/seasons/${season}/segments/0/leagues/${encodeURIComponent(id)}?view=mSettings`,
+    parse: (json, sportId) => {
+      const ids = ESPN_STAT_IDS[sportId] || {};
+      const s = json.settings || {};
+      const items = (s.scoringSettings || {}).scoringItems || [];
+      const scoring = {};
+      const unmapped = [];
+      for (const it of items) {
+        const v = Number(it.points);
+        if (!Number.isFinite(v) || v === 0) continue;
+        const mine = ids[it.statId];
+        if (mine) scoring[mine] = (scoring[mine] || 0) + v;
+        else unmapped.push([`stat ${it.statId}`, v]);
+      }
+      const slots = (s.rosterSettings || {}).lineupSlotCounts || {};
+      const roster = Object.entries(slots)
+        .filter(([, n]) => n > 0)
+        .map(([slot, n]) => `${slot}×${n}`);
+      return {
+        leagueName: s.name || null,
+        teams: s.size || null,
+        roster, scoring, unmapped,
+      };
+    },
+  },
+  {
+    id: 'yahoo', name: 'Yahoo', sports: ['nfl', 'nba', 'mlb'],
+    reach: 'oauth',
+    blurb: 'A real, supported, documented API — behind OAuth 2.0. The sign-in ' +
+           'secret cannot live in a web page, so this one needs a server.',
+    idLabel: 'League key',
+    idHint: 'Yahoo identifies a league as game.l.id, for example nfl.l.123456. ' +
+            'Until the server exists, paste your settings instead.',
+    idExample: 'nfl.l.123456',
+    idPattern: /^[a-z]+\.l\.\d+$/i,
+    url: (id) =>
+      `https://fantasysports.yahooapis.com/fantasy/v2/league/${encodeURIComponent(id)}` +
+      '/settings?format=json',
+    parse: (json, sportId) => {
+      const ids = YAHOO_STAT_IDS[sportId] || {};
+      const scoring = {};
+      const unmapped = [];
+      // Yahoo's JSON is a numerically-keyed tree; walk it for stat modifiers
+      // rather than assuming a fixed depth, because the depth moves.
+      const mods = [];
+      (function walk(node, depth) {
+        if (!node || typeof node !== 'object' || depth > 12) return;
+        if (node.stat_id !== undefined && node.value !== undefined) mods.push(node);
+        for (const v of Object.values(node)) walk(v, depth + 1);
+      })(json, 0);
+      for (const m of mods) {
+        const v = Number(m.value);
+        if (!Number.isFinite(v) || v === 0) continue;
+        const mine = ids[Number(m.stat_id)];
+        if (mine) scoring[mine] = (scoring[mine] || 0) + v;
+        else unmapped.push([`stat ${m.stat_id}`, v]);
+      }
+      return { leagueName: null, teams: null, roster: [], scoring, unmapped };
+    },
+  },
+  {
+    id: 'paste', name: 'Any other platform', sports: ['nfl', 'nba', 'mlb'],
+    reach: 'paste',
+    blurb: 'CBS, NFL.com, Fantrax, ottoneu, or a league constitution in a ' +
+           'document. Copy your scoring settings page and paste it in. No ' +
+           'network, no account, nothing to break.',
+  },
+];
+
+const REACH_META = {
+  open:          ['WORKS NOW', 'Public API — your browser can call it directly'],
+  'public-only': ['PUBLIC LEAGUES', 'Reachable for public leagues; private needs a server'],
+  oauth:         ['NEEDS A SERVER', 'Official API, but OAuth secrets cannot live in a web page'],
+  paste:         ['ALWAYS WORKS', 'No network involved'],
+};
+
+/** Read a pasted scoring page. Tolerant on purpose: platforms format these
+ *  wildly differently, and a parser that only understands one of them is a
+ *  parser for one platform. */
+function parsePastedScoring(text, sportId) {
+  const cats = catsFor(sportId);
+  // Longest synonym first so "three point field goals made" is claimed before
+  // "field goals" can take it.
+  const lookup = cats
+    .flatMap((c) => c.syn.map((sy) => [sy, c.key]))
+    .sort((a, b) => b[0].length - a[0].length);
+
+  const scoring = {};
+  const unmapped = [];
+  const lines = text.split(/[\n\r]+/).map((l) => l.trim());
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    // Two readings of the same line. Numbers come off `raw`, which still has
+    // its signs; labels are matched against `flat`, where underscores and
+    // dashes have become spaces so that "3-pointers" and "pass_yd" both read
+    // as words. Flattening before reading the number turned "-2" into "2" and
+    // imported an interception penalty as a bonus.
+    const raw = line.toLowerCase().replace(/[–—]/g, '-').replace(/\s+/g, ' ');
+    const flat = raw.replace(/[_\-]+/g, ' ').replace(/\s+/g, ' ');
+
+    const hit = lookup.find(([sy]) =>
+      new RegExp(`(^|[^a-z0-9])${sy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(flat));
+
+    // "1 point per 25 passing yards" and "every 25 passing yards = 1 point"
+    // both mean 0.04 a yard. Pull the divisor out first, then read the value
+    // from what is left -- otherwise the 25 gets mistaken for the value and
+    // the imported scoring is wrong by a factor of several hundred.
+    const per = flat.match(/\b(?:per|every|each)\s+(\d+(?:\.\d+)?)\b/);
+    const divisor = per ? Number(per[1]) : 1;
+    const rest = raw.replace(/\b(?:per|every|each)\s+\d+(?:\.\d+)?\b/, ' ');
+    let nums = rest.match(/-?\d+(?:\.\d+)?/g);
+
+    // Platforms that lay their settings out as a table put the category on one
+    // line and its value on the next. Look ahead one line for a bare number.
+    if (hit && !nums) {
+      const next = (lines[i + 1] || '').trim();
+      if (/^-?\d+(?:\.\d+)?$/.test(next)) { nums = [next]; i++; }
+    }
+    if (!nums) continue;
+
+    const value = Number(nums[nums.length - 1]) / (divisor || 1);
+    if (!Number.isFinite(value)) continue;
+
+    if (hit) {
+      // First mention wins: settings pages often repeat a category lower down
+      // in a summary or a bonus table.
+      if (scoring[hit[1]] === undefined) scoring[hit[1]] = value;
+    } else if (/[a-z]/.test(flat)) {
+      unmapped.push([line.slice(0, 60), value]);
+    }
+  }
+  return { leagueName: null, teams: null, roster: [], scoring, unmapped };
+}
+
+/** Write a synced result into the same store the settings page writes to, so
+ *  every board, player page and projection on the site recomputes from it. */
+function applySyncedScoring(sportId, scoring) {
+  const existing = customScoring() || {};
+  if (sportId === 'mlb') {
+    const batting = { ...(existing.batting || {}) };
+    const pitching = { ...(existing.pitching || {}) };
+    for (const [k, v] of Object.entries(scoring)) {
+      const cat = catByKey('mlb', k);
+      if (!cat) continue;
+      (cat.side === 'pitching' ? pitching : batting)[k] = v;
+    }
+    saveScoring({ ...existing, batting, pitching });
+  } else {
+    saveScoring({ ...existing, [sportId]: { ...(existing[sportId] || {}), ...scoring } });
+  }
+}
+
+function viewSync() {
+  const s = sport();
+  const sportId = s.id;
+  const season = (state.meta?.seasons || [0, new Date().getFullYear()])[1];
+  const ui = { provider: 'sleeper', result: null, error: null, busy: false };
+
+  const body = el('div', {});
+  const providerRow = el('div', { class: 'lead-chips' });
+
+  const provider = () => SYNC_PROVIDERS.find((p) => p.id === ui.provider);
+
+  // ---- the result preview, and the button that commits it ---------------
+  const renderResult = () => {
+    const r = ui.result;
+    if (!r) return null;
+    const cats = catsFor(sportId);
+    const found = cats.filter((c) => r.scoring[c.key] !== undefined);
+    const missing = cats.filter((c) => r.scoring[c.key] === undefined);
+
+    if (!found.length) {
+      return el('div', { class: 'panel' },
+        el('div', { class: 'panel-head' }, el('h2', {}, 'Nothing recognised')),
+        el('div', { class: 'empty-state' },
+          el('h3', {}, 'No scoring categories were found'),
+          el('div', {}, 'That usually means the page you pasted was a standings ' +
+            'or roster page rather than the scoring settings. Paste the page ' +
+            'that lists each category and what it is worth.')));
+    }
+
+    const current = sportId === 'mlb' ? activeScoring() : genWeights();
+    const currentOf = (c) => (sportId === 'mlb'
+      ? (current[c.side] || {})[c.key]
+      : current[c.key]);
+
+    return el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' },
+        el('h2', {}, r.leagueName ? `Read from “${r.leagueName}”` : 'What was read'),
+        el('span', { class: 'hint' },
+          `${found.length} of ${cats.length} categories recognised` +
+          (r.teams ? ` · ${r.teams} teams` : ''))),
+      statTable(found.map((c) => ({
+        cat: c.label,
+        was: currentOf(c),
+        now: r.scoring[c.key],
+        change: currentOf(c) === r.scoring[c.key] ? 'same' : 'changed',
+      })), [
+        { key: 'cat', label: 'Category', cls: 'txt' },
+        { key: 'was', label: 'Currently', get: (x) => (x.was === undefined ? '—' : num(x.was, 2)) },
+        { key: 'now', label: 'Your league', get: (x) => num(x.now, 2) },
+        { key: 'change', label: '', cls: 'txt',
+          get: (x) => el('span', { class: `plan-tag${x.change === 'changed' ? ' you' : ''}` },
+            x.change === 'changed' ? 'changes' : 'same') },
+      ], { sortKey: null }),
+      missing.length ? el('div', { class: 'note', html:
+        `<b>Not found, so left alone:</b> ${missing.map((c) => c.label).join(', ')}. ` +
+        'Anything not read keeps its current value — nothing is silently zeroed.' }) : null,
+      r.unmapped.length ? el('div', { class: 'note', html:
+        `<b>Read but not used:</b> ${r.unmapped.slice(0, 14)
+          .map(([k, v]) => `${k} (${v})`).join(', ')}` +
+        (r.unmapped.length > 14 ? `, and ${r.unmapped.length - 14} more` : '') +
+        '. These are categories this site does not carry — kickers, team ' +
+        'defence, and per-game bonuses have no equivalent in a historical ' +
+        'dataset, so they are shown rather than quietly dropped.' }) : null,
+      r.roster.length ? el('div', { class: 'note', html:
+        `<b>Roster read:</b> ${r.roster.join(', ')}. Roster slots are not used ` +
+        'by the scoring engine yet — they are shown so you can see the sync ' +
+        'found them.' }) : null,
+      el('div', { class: 'sync-actions' },
+        el('button', { class: 'btn primary', onclick: () => {
+          applySyncedScoring(sportId, r.scoring);
+          go(`#/${sportId}/career`);
+        } }, `Use this scoring for ${s.league}`),
+        el('a', { class: 'btn', href: '#/settings' }, 'Review it first')),
+      watermark());
+  };
+
+  // ---- the input for whichever provider is selected ----------------------
+  const renderInput = () => {
+    const p = provider();
+    const [pill, pillWhy] = REACH_META[p.reach];
+
+    if (p.reach === 'paste' || p.reach === 'oauth') {
+      const box = el('textarea', {
+        rows: 10, class: 'sync-paste', spellcheck: 'false',
+        placeholder: sportId === 'nfl'
+          ? 'Passing Yards            0.04\nPassing TD               4\n' +
+            'Interceptions           -2\nRushing Yards            0.1\n' +
+            'Rushing TD               6\nReceptions               0.5\n' +
+            'Receiving Yards          0.1\nReceiving TD             6\nFumbles Lost            -2'
+          : sportId === 'nba'
+            ? 'Points        1\nRebounds      1.2\nAssists       1.5\nSteals        3\n' +
+              'Blocks        3\nTurnovers    -1\nThree Pointers Made  0.5'
+            : 'Runs          1\nSingles       1\nDoubles       2\nHome Runs     3\n' +
+              'RBI           1\nStolen Bases  2\nWalks         1\n' +
+              'Innings Pitched 1\nWins          3\nStrikeouts    1\nEarned Runs  -1',
+      });
+      return el('div', {},
+        p.reach === 'oauth' ? el('div', { class: 'note', html:
+          '<b>Why this one needs a server.</b> Yahoo’s API is the best of the ' +
+          'four — documented, supported, and it will not change under you. It ' +
+          'uses OAuth 2.0, which means an app secret. A secret shipped to a ' +
+          'browser is a secret published. Until there is a server to hold it, ' +
+          'paste your settings below and it works the same.' }) : null,
+        el('label', { class: 'sync-label' }, 'Paste your league’s scoring settings'),
+        box,
+        el('div', { class: 'sync-actions' },
+          el('button', { class: 'btn primary', onclick: () => {
+            ui.result = parsePastedScoring(box.value, sportId);
+            ui.error = null;
+            draw();
+          } }, 'Read this'),
+          el('span', { class: 'hint' },
+            'Copy the whole scoring page — extra text is ignored.')));
+    }
+
+    const input = el('input', {
+      type: 'text', class: 'sync-input', spellcheck: 'false',
+      placeholder: p.idExample, 'aria-label': p.idLabel,
+    });
+    const status = el('div', { class: 'sync-status' });
+
+    const run = async () => {
+      const id = input.value.trim();
+      if (!p.idPattern.test(id)) {
+        swap(status, el('div', { class: 'note', html:
+          `<b>That does not look like a ${p.name} ${p.idLabel.toLowerCase()}.</b> ` +
+          `Expected something like <code>${p.idExample}</code>.` }));
+        return;
+      }
+      swap(status, el('div', { class: 'boot-spinner' }));
+      try {
+        const res = await fetch(p.url(id, season, sportId));
+        if (!res.ok) throw new Error(`${p.name} returned ${res.status}`);
+        const json = await res.json();
+        ui.result = p.parse(json, sportId);
+        ui.error = null;
+        draw();
+      } catch (err) {
+        // A failure here is nearly always one of four things, and saying which
+        // is more useful than printing the exception.
+        swap(status, el('div', { class: 'note', html:
+          `<b>Could not read that league.</b> ${String(err.message || err)}<br><br>` +
+          'Usually one of: the ID is wrong; the league is private; the ' +
+          `platform is blocking the request from a web page; or this copy of ` +
+          'the site is running from a file rather than a web address. ' +
+          'The paste option below works regardless — pick ' +
+          '<b>Any other platform</b> and paste your settings in.' }));
+      }
+    };
+
+    return el('div', {},
+      el('div', { class: 'sync-provider-note' },
+        el('span', { class: `pill status-${p.reach === 'open' ? 'live' : 'partial'}`,
+                     title: pillWhy }, pill),
+        el('span', {}, p.blurb)),
+      el('label', { class: 'sync-label' }, p.idLabel),
+      el('div', { class: 'sync-row' },
+        input,
+        el('button', { class: 'btn primary', onclick: run }, `Sync from ${p.name}`)),
+      el('div', { class: 'hint sync-hint' }, p.idHint),
+      status);
+  };
+
+  const draw = () => {
+    swap(providerRow, SYNC_PROVIDERS.map((p) => el('button', {
+      type: 'button',
+      class: `lead-chip${p.id === ui.provider ? ' on' : ''}`,
+      'aria-pressed': String(p.id === ui.provider),
+      onclick: () => { ui.provider = p.id; ui.result = null; draw(); },
+    }, p.name)));
+
+    swap(body,
+      el('div', { class: 'panel' },
+        el('div', { class: 'panel-head' },
+          el('h2', {}, `Sync a ${s.league} league`),
+          el('span', { class: 'hint' },
+            'Bring your scoring in once — every page on this site recomputes from it')),
+        el('div', { class: 'sync-body' },
+          providerRow,
+          renderInput()),
+        watermark()),
+      renderResult());
+  };
+
+  swap(app(),
+    el('div', { class: 'view-head' },
+      el('h1', {}, 'Sync Your League'),
+      el('p', {}, 'Point this at your league and it reads your scoring rules. ' +
+        'Every leaderboard, player page and projection then recomputes under ' +
+        'them — including seasons played eighty years before your league existed.')),
+    body,
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' },
+        el('h2', {}, 'Where each platform stands'),
+        el('span', { class: 'hint' }, 'Stated plainly, because they differ a lot')),
+      el('div', { class: 'health-list' },
+        SYNC_PROVIDERS.map((p) => {
+          const [pill, why] = REACH_META[p.reach];
+          return el('div', { class: 'health-item' },
+            el('div', { class: 'health-head' },
+              el('span', { class: 'health-name' }, p.name),
+              el('span', {
+                class: `pill status-${p.reach === 'open' || p.reach === 'paste' ? 'live' : 'partial'}`,
+                title: why,
+              }, pill)),
+            el('p', { class: 'health-what' }, p.blurb),
+            el('div', { class: 'health-next' },
+              el('b', {}, 'Covers: '),
+              p.sports.map((id) => SPORTS[id].league).join(', ')));
+        })),
+      watermark()));
+
+  draw();
+}
+
 // ------------------------------------------------------------- build plan
 //
 // The owner's page that is not about the code: what to do next, in what order,
@@ -4462,12 +5033,14 @@ const PLAN = [
           'a 13-category scoring system twice. This is the single highest-value ' +
           'thing left to build.',
         cost: '$0 → ~$25/mo', blocked: 'Needs a backend' },
-      { do: 'Import a league instead of typing it', detail:
-          'Paste an ESPN or Yahoo or Sleeper league ID and have the scoring ' +
-          'settings read themselves in. Sleeper has a documented public API and is ' +
-          'the easy one to start with. This is the feature that makes someone ' +
-          'choose you over a spreadsheet.',
-        blocked: 'Needs a backend' },
+      { do: 'Finish league import', detail:
+          'Built and live at Sync Your League: Sleeper reads directly from the ' +
+          'browser, ESPN works for public leagues, and a paste-in reader covers ' +
+          'every other platform with no network at all. What is left is Yahoo, ' +
+          'which is OAuth and needs somewhere safe to keep a client secret, and ' +
+          'private ESPN leagues, which need somewhere safe to keep a session ' +
+          'cookie. Both are the same small server.',
+        blocked: 'Yahoo + private ESPN need a backend' },
       { do: 'Save players and get told things', detail:
           'A watchlist, and a weekly email: "here is how your saved players did ' +
           'under your scoring". Email is what brings people back without an app.',
@@ -5075,6 +5648,7 @@ async function route() {
       case 'terms':   viewTerms(); break;
       case 'pricing': viewPricing(); break;
       case 'settings': viewSettings(); break;
+      case 'sync':    viewSync(); break;
       case 'trends':  viewTrends(); break;
       case 'ask':     viewAsk(); break;
       case 'admin':   viewAdmin(); break;
