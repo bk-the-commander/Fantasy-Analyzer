@@ -655,6 +655,146 @@ async function serve() {
     await ctx.close();
   }
 
+  // ------------------------------------------------------------- parity
+  //
+  // Football is the biggest fantasy audience of the three, so "baseball plus
+  // two others" is the wrong shape for this product. Every league must open on
+  // the same panels and offer the same views.
+  console.log('\n— league parity —');
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+    const pp = await ctx.newPage();
+    const errs = [];
+    pp.on('pageerror', (e) => errs.push(e.message));
+
+    // A cold visit lands on football, and the switcher leads with it.
+    await pp.goto(`${BASE}/`, { waitUntil: 'networkidle' });
+    await pp.waitForTimeout(2200);
+    const landed = await pp.evaluate(() => state.sport);
+    const order = await pp.$$eval('.sport-switch button', (n) => n.map((x) => x.textContent.replace(/[^A-Z]/g, '')));
+    if (landed !== 'nfl') fail('parity', `a cold visit landed on ${landed}, expected nfl`);
+    else ok('parity', 'a cold visit lands on the NFL');
+    if (order.join() !== 'NFL,NBA,MLB') fail('parity', `switcher order ${order.join()}`);
+    else ok('parity', `switcher leads with football (${order.join(', ')})`);
+
+    // An old baseball link minted before the site had leagues still means baseball.
+    await pp.goto(`${BASE}/#/player/bondsba01`, { waitUntil: 'networkidle' });
+    await pp.waitForTimeout(1200);
+    const legacy = await pp.evaluate(() => state.sport);
+    if (legacy !== 'mlb') fail('parity', `a pre-league link resolved to ${legacy}`);
+    else ok('parity', 'pre-league links still mean baseball');
+
+    // The four panels that used to be baseball-only.
+    const wanted = ['career summary', 'team history', 'projected'];
+    for (const [route, league, extra] of [
+      ['#/nfl/player/00-0019596', 'NFL', 'passing'],
+      ['#/nba/player/201939', 'NBA', 'shooting'],
+      ['#/mlb/player/bondsba01', 'MLB', 'advanced'],
+    ]) {
+      await pp.goto(`${BASE}/${route}`, { waitUntil: 'networkidle' });
+      await pp.waitForTimeout(2000);
+      const heads = (await pp.$$eval('.panel-head h2', (n) => n.map((x) => x.textContent.toLowerCase())));
+      const blob = heads.join(' | ');
+      const missing = [...wanted, extra].filter((w) => !blob.includes(w));
+      // Baseball writes its summary as a bio panel rather than the generated one.
+      const ok2 = league === 'MLB' ? !missing.filter((x) => x !== 'career summary').length : !missing.length;
+      if (!ok2) fail('parity', `${league} player page missing: ${missing.join(', ')}`);
+      else ok('parity', `${league} player page carries ${heads.length} panels incl. ${extra}`);
+    }
+
+    // Compare works in every league, and no league is told it is unsupported.
+    for (const [route, league, expect] of [
+      ['#/nfl/compare/00-0019596,00-0026498', 'NFL', 'Tom Brady'],
+      ['#/nba/compare/2544,201939', 'NBA', 'LeBron James'],
+      ['#/mlb/compare/bondsba01,ruthba01', 'MLB', 'Barry Bonds'],
+    ]) {
+      await pp.goto(`${BASE}/${route}`, { waitUntil: 'networkidle' });
+      await pp.waitForTimeout(1800);
+      const cards = await pp.$$eval('.cmp-card h3', (n) => n.map((x) => x.textContent.trim()));
+      const body = await pp.evaluate(() => document.querySelector('#app').innerText);
+      if (cards.length !== 2) fail('parity', `${league} compare rendered ${cards.length} cards`);
+      else if (!cards.includes(expect)) fail('parity', `${league} compare missing ${expect}: ${cards.join()}`);
+      else if (/only, for now|not wired up/i.test(body)) fail('parity', `${league} compare says it is unsupported`);
+      else ok('parity', `${league} compare: ${cards.join(' vs ')}`);
+    }
+
+    // Rates are computed, not decorative -- check them against known careers.
+    const rates = await pp.evaluate(async () => {
+      const grab = async (hash) => {
+        location.hash = hash;
+        await new Promise((r) => setTimeout(r, 1800));
+        return Object.fromEntries([...document.querySelectorAll('.metric')].map((m) => [
+          m.querySelector('.metric-label').textContent.trim(),
+          m.querySelector('.metric-value').textContent.trim()]));
+      };
+      return { brady: await grab('#/nfl/player/00-0019596'), curry: await grab('#/nba/player/201939') };
+    });
+    const rateChecks = [
+      ['Brady completion %', rates.brady['Completion %'], '64.3%'],
+      ['Brady yards / attempt', rates.brady['Yards / attempt'], '7.40'],
+      ['Curry free throw %', rates.curry['Free throw %'], '91.2%'],
+      ['Curry true shooting %', rates.curry['True shooting %'], '62.6%'],
+    ];
+    for (const [label, got, want] of rateChecks) {
+      if (got !== want) fail('parity', `${label}: got ${got}, expected ${want}`);
+      else ok('parity', `${label} = ${got}`);
+    }
+    // Three career receptions is not a receiving career.
+    if (rates.brady['Yards / catch'] !== undefined) {
+      fail('parity', 'Brady was shown a receiving panel off three career catches');
+    } else ok('parity', 'rate groups need real volume before they appear');
+
+    if (errs.length) fail('parity', errs.join('|'));
+    await ctx.close();
+  }
+
+  // -------------------------------------------------------------- parked
+  console.log('\n— parked items —');
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 950 } });
+    const kp = await ctx.newPage();
+    const errs = [];
+    kp.on('pageerror', (e) => errs.push(e.message));
+
+    await kp.goto(`${BASE}/#/home`, { waitUntil: 'networkidle' });
+    await kp.waitForTimeout(2200);
+    const chrome = await kp.evaluate(() => ({
+      nav: [...document.querySelectorAll('.nav-item')].map((n) => n.textContent),
+      foot: document.querySelector('#siteFoot').innerText,
+    }));
+    const navText = chrome.nav.join(' | ');
+
+    // An unregistered company must not appear in a copyright line.
+    if (/Kaliris Labs/i.test(chrome.foot)) fail('parked', 'the unregistered company name is still in the footer');
+    else ok('parked', 'no unregistered company name in the footer');
+    if (/Built by Bill/i.test(chrome.foot)) fail('parked', 'the personal byline is still in the footer');
+    else ok('parked', 'no personal byline in the footer');
+    if (/Dynasty \(6x\)/.test(chrome.foot)) fail('parked', 'the private-league line is still in the footer');
+    else ok('parked', 'no private-league joke in the footer');
+    if (/Plans|Trends \(beta\)|Ask \(beta\)/.test(chrome.foot)) fail('parked', 'the footer still links unbuilt pages');
+    else ok('parked', 'footer links only to pages that work');
+    if (/\bTrends\b/.test(navText) && !/unbuilt/i.test(navText)) fail('parked', 'Trends is still offered as a customer feature');
+    else ok('parked', 'Trends is marked unbuilt and lives under Owner');
+    if (/This Season/.test(navText) && !/MLB/.test(navText)) fail('parked', 'This Season is still in the customer nav');
+    else ok('parked', 'This Season is labelled one-league and lives under Owner');
+
+    // The review page has to actually explain each one.
+    await kp.goto(`${BASE}/#/parked`, { waitUntil: 'networkidle' });
+    await kp.waitForTimeout(1400);
+    const items = await kp.$$eval('.health-item', (n) => n.length);
+    const text = await kp.evaluate(() => document.querySelector('#app').innerText);
+    if (items < 8) fail('parked', `the review page lists only ${items} items`);
+    else ok('parked', `${items} parked items documented`);
+    for (const need of ['Was:', 'Why:', 'Now:', 'To bring it back:']) {
+      if (!text.includes(need)) fail('parked', `review entries missing "${need}"`);
+    }
+    if (['Was:', 'Why:', 'Now:', 'To bring it back:'].every((n) => text.includes(n))) {
+      ok('parked', 'every entry says what it was, why, what now, and how to undo it');
+    }
+    if (errs.length) fail('parked', errs.join('|'));
+    await ctx.close();
+  }
+
   // ---------------------------------------------------------- league sync
   //
   // The importer is the product's whole argument -- nobody types a 13-category
@@ -748,6 +888,52 @@ async function serve() {
         'MY LEAGUE 2024 SETTINGS\nCommissioner: Bill\n12 teams, head to head points\n' +
         'Home Runs 3\nStolen Bases 2\nRuns Batted In 1\nStrikeouts 1\nEarned Runs -1', 'mlb'),
     }));
+    // Yahoo's own house format, which is what Bill's league is on and the one
+    // platform whose API cannot work without a server -- so the paste route is
+    // the real route for it and has to read the page verbatim.
+    const yahooPaste = await sp.evaluate(() => ({
+      nfl: parsePastedScoring([
+        'Fantasy Points', 'Offense',
+        'Passing Yards (25 yards per point)\t1',
+        'Passing Touchdowns\t4',
+        'Interceptions\t-1',
+        'Rushing Attempts\t0',
+        'Rushing Yards (10 yards per point)\t1',
+        'Rushing Touchdowns\t6',
+        'Reception\t0.5',
+        'Receiving Yards (10 yards per point)\t1',
+        'Receiving Touchdowns\t6',
+        'Return Touchdowns\t6',
+        '2-Point Conversions\t2',
+        'Fumbles Lost\t-2',
+      ].join('\n'), 'nfl'),
+      mlb: parsePastedScoring([
+        'Batting',
+        'Runs (R)\t1', 'Hits (H)\t1', 'Doubles (2B)\t1', 'Triples (3B)\t2',
+        'Home Runs (HR)\t2', 'Runs Batted In (RBI)\t1', 'Stolen Bases (SB)\t2',
+        'Walks (BB)\t1',
+        'Pitching',
+        'Innings Pitched (IP)\t1', 'Wins (W)\t3', 'Saves (SV)\t4',
+        'Strikeouts (K)\t1', 'Earned Runs (ER)\t-1',
+      ].join('\n'), 'mlb'),
+    }));
+    const yn = yahooPaste.nfl.scoring, ym = yahooPaste.mlb.scoring;
+    const yahooChecks = [
+      ['"25 yards per point" reads as 0.04', yn.PassYd === 0.04 && yn.RushYd === 0.1
+        && yn.RecYd === 0.1],
+      ['a zero category is not reported as unread', yahooPaste.nfl.unmapped.length === 0],
+      ['one 2-point line becomes three weights',
+        yn.Pass2PT === 2 && yn.Rush2PT === 2 && yn.Rec2PT === 2],
+      ['Hits spreads across singles, doubles, triples and homers',
+        ym['1B'] === 1 && ym['2B'] === 2 && ym['3B'] === 3 && ym.HR === 3],
+      ['pitching side read from the same paste',
+        ym.IP === 1 && ym.W === 3 && ym.SV === 4 && ym.K === 1 && ym.ER === -1],
+    ];
+    for (const [label, good] of yahooChecks) {
+      if (!good) fail('sync', `yahoo paste: ${label} — ${JSON.stringify(yn)} / ${JSON.stringify(ym)}`);
+      else ok('sync', `yahoo paste: ${label}`);
+    }
+
     const checks = [
       ['plain half-PPR', paste.plain.scoring.PassYd === 0.04 && paste.plain.scoring.Rec === 0.5
         && paste.plain.scoring.FumLost === -2],
@@ -1056,7 +1242,9 @@ async function serve() {
                   '#/pricing', '#/nba/player', '#/nba/scoring', '#/nfl/career', '#/nfl/scoring',
                   '#/health', '#/roadmap', '#/mlb/chat', '#/nfl/chat', '#/nba/career',
                   '#/settings', '#/nba/career?sort=AST', '#/mlb/career?sort=SV&group=pitching',
-                  '#/mlb/sync', '#/nfl/sync'];
+                  '#/mlb/sync', '#/nfl/sync', '#/parked',
+                  '#/nfl/player/00-0019596', '#/nba/player/2544',
+                  '#/nfl/compare/00-0019596,00-0026498', '#/nba/compare/2544,201939'];
   const DEVICES = [
     [360, 800, 'android-small', true],   // Galaxy S-class
     [390, 844, 'iphone', true],          // iPhone 14/15

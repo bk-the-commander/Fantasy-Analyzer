@@ -1,4 +1,4 @@
-/* Dynasty Sports Analytics — all-time MLB player stats in this league's
+/* Dynasty Analytics — all-time NFL, NBA and MLB player stats in your league's
  * fantasy points. A Kaliris Labs project.
  *
  * No framework, no build step: the whole app is this file plus a static JSON
@@ -16,7 +16,7 @@
 const SITE = {
   name: 'Dynasty Analytics',
   shortName: 'DA',
-  tagline: 'Every MLB player since 1871, scored in your league’s points.',
+  tagline: 'Every player in football, basketball and baseball — scored in your league’s points.',
 
   /* Footer credit line. */
   dynasty: 'The Dynasty (6x) 💍',
@@ -28,6 +28,12 @@ const SITE = {
   watermark: 'Dynasty Analytics',
   watermarkBy: 'Built by Bill Kaliris Jr',
   owner: 'Bill Kaliris Jr',
+
+  /* PARKED, both. A personal byline reads as a portfolio piece, and the
+   * dynasty line is an inside joke a first-time visitor is not in on. Flip
+   * either to true to put it back. See #/parked. */
+  showByline: false,
+  showDynasty: false,
 
   /* ---- CONTACT ---------------------------------------------------------
    * Blank fields simply don't render, so partial detail is fine.
@@ -45,7 +51,11 @@ const SITE = {
   /* Shown on About / Privacy / Terms. A personal name is a perfectly valid
    * copyright holder -- no company is required to publish. Swap in a
    * registered entity here if and when one exists. */
-  legalEntity: 'Kaliris Labs',
+  /* PARKED. Kaliris Labs is not a registered company, and a copyright line
+   * naming an entity that does not exist is a claim you cannot support. Left
+   * blank until an LLC exists; the footer and legal pages fall back to the
+   * product name and "the operator of this site". See #/parked. */
+  legalEntity: '',
   jurisdiction: 'Massachusetts, USA',
   siteUrl: '',               // canonical URL once it is deployed
   launchedYear: 2026,
@@ -59,7 +69,9 @@ const SITE = {
    * The historical dataset ends at its last complete season. Anything newer
    * is fetched live from the MLB Stats API by the visitor's browser. Set
    * `season` to pin a year; null follows the calendar. */
-  live: { enabled: true, season: null },
+  /* PARKED. Exists for one league out of three and has never made a real
+   * request from the build environment. Still reachable at #/mlb/live. */
+  live: { enabled: true, season: null, inNav: false },
 
   /* ---- MONETIZATION ----------------------------------------------------
    * Both are off until switched on. See README "Monetization" for the full
@@ -132,8 +144,14 @@ const SPORTS = {
   },
 };
 
-const SPORT_IDS = Object.keys(SPORTS);
-const sport = () => SPORTS[state.sport] || SPORTS.mlb;
+/* Order matters: this drives the league switcher, the home feed and which
+ * league a first-time visitor lands in. Football first because it is by a
+ * wide margin the biggest fantasy audience of the three, then basketball,
+ * then baseball -- which is also the order their seasons arrive in. Baseball
+ * was built first, but being built first is not a reason to lead with it. */
+const SPORT_IDS = ['nfl', 'nba', 'mlb'];
+const DEFAULT_SPORT = 'nfl';
+const sport = () => SPORTS[state.sport] || SPORTS[DEFAULT_SPORT];
 
 // ------------------------------------------------------------- entitlement
 //
@@ -224,7 +242,8 @@ const state = {
   ranks: new Map(),   // board name -> Map(playerId -> rank)
   compare: [],        // player ids pinned in the Compare view
   view: null,
-  sport: 'mlb',       // active league; the URL is the source of truth
+  sport: DEFAULT_SPORT,   // active league; the URL is the source of truth
+  genRates: new Map(),    // points per game per league, for regression
   sports: {},         // id -> {meta, index, pct, norm, idPos, pidPos}
 };
 
@@ -512,13 +531,15 @@ function initTheme() {
 // the active one -- #/nba/career rather than a bare #/career.
 
 const NAV = [
+  // Every entry here works, in every league. Anything that exists for one
+  // sport out of three, or describes a feature rather than being one, lives in
+  // the Owner folder until that stops being true -- see #/parked.
   { id: 'explore', label: 'Explore', icon: '🔎', open: true, items: [
     ['home',    'Home',            '🏠', false, 'Highlights across all three leagues'],
     ['player',  'Player Lookup',   '👤', true,  'Search anyone and see their career'],
     ['career',  'Career Leaders',  '🏆', true,  'Every career ranked by your points'],
     ['season',  'Season Leaders',  '📈', true,  'The best individual seasons ever'],
     ['year',    'Year Explorer',   '📅', true,  'Any single season, top to bottom'],
-    ['live',    'This Season',     '🔴', true,  'Current-season totals, live'],
     ['compare', 'Compare',         '⚖️', true,  'Two careers side by side'],
   ] },
   { id: 'league', label: 'My League', icon: '⚙️', open: true, items: [
@@ -527,7 +548,6 @@ const NAV = [
   ] },
   { id: 'tools', label: 'Tools', icon: '🧰', open: false, items: [
     ['chat',   'Ask AI',  '💬', true,  'Questions answered from this data'],
-    ['trends', 'Trends',  '📊', false, 'Waiver and hot/cold — in development'],
   ] },
   { id: 'about', label: 'About', icon: '👋', open: false, items: [
     ['about',   'About',   'ℹ️', false, 'What this is and where the data comes from'],
@@ -535,9 +555,12 @@ const NAV = [
     ['contact', 'Contact', '✉️', false, 'Corrections and enquiries'],
   ] },
   { id: 'owner', label: 'Owner', icon: '🔧', open: false, owner: true, items: [
-    ['health',  'System Health',   '🩺', false, 'What is running and what needs work'],
+    ['health',  'System Health',      '🩺', false, 'What is running and what needs work'],
+    ['parked',  'Parked for Review',  '🅿️', false, 'Hidden from visitors, and why'],
     ['roadmap', 'Build Plan & Costs', '🗺️', false, 'Next steps, pricing, what to pay for'],
-    ['admin',   'Admin Console',   '🔐', false, 'Plan override and feature flags'],
+    ['trends',  'Trends (unbuilt)',   '📊', false, 'Waiver and hot/cold — needs a backend'],
+    ['live',    'This Season (MLB)',  '🔴', true,  'One league only, never verified'],
+    ['admin',   'Admin Console',      '🔐', false, 'Plan override and feature flags'],
   ] },
 ];
 
@@ -649,7 +672,7 @@ function initDrawer() {
 // ------------------------------------------------------- sport + tier chrome
 
 async function applySport(id) {
-  state.sport = SPORTS[id] ? id : 'mlb';
+  state.sport = SPORTS[id] ? id : DEFAULT_SPORT;
   const s = sport();
   if (s.status === 'live') {
     try { await loadSportData(s.id); useSportData(s.id); }
@@ -860,6 +883,7 @@ function saveScoring(rules) {
   state.boards.clear();
   state.ranks.clear();
   state.shards.clear();
+  state.genRates.clear();
   route();
 }
 
@@ -868,6 +892,7 @@ function resetScoring() {
   state.boards.clear();
   state.ranks.clear();
   state.shards.clear();
+  state.genRates.clear();
   route();
 }
 
@@ -1424,9 +1449,14 @@ function tile(label, value, sub, hero = false) {
   // "171·428·437" needs a different size from "6" — a single headline size
   // either clips the compound values or wastes the tile on the short ones.
   const compound = typeof value === 'string' && /[·–]/.test(value);
+  // Values are normally numbers, which must never break mid-number. A words
+  // value -- "right Shoulder" as the most common injury -- is the opposite
+  // case: nowrap just clips it. Detect which one this is rather than making
+  // every caller say.
+  const wordy = typeof value === 'string' && !compound && /[a-z]{3}/i.test(value);
   return el('div', { class: `tile${hero ? ' hero' : ''}` },
     el('div', { class: 'tile-label' }, label),
-    el('div', { class: `tile-value${compound ? ' compound' : ''}` }, value),
+    el('div', { class: `tile-value${compound ? ' compound' : ''}${wordy ? ' wordy' : ''}` }, value),
     sub ? el('div', { class: 'tile-sub', html: sub }) : null);
 }
 
@@ -2223,7 +2253,8 @@ async function viewYear(year) {
 
   const head = el('div', { class: 'view-head' },
     el('h1', {}, 'Year Explorer'),
-    el('p', {}, 'Pick any season back to 1871 and see who actually won your league that year.'));
+    el('p', {}, `Pick any season back to ${state.meta.seasons[0]} and see who ` +
+      'actually won your league that year.'));
 
   const picker = el('select', { onchange: (e) => go(`#/year/${e.target.value}`) },
     Array.from({ length: ymax - ymin + 1 }, (_, i) => ymax - i)
@@ -2823,7 +2854,9 @@ function renderFooter() {
 
   swap($('#siteFoot'), el('div', { class: 'foot-inner' },
     el('div', { class: 'foot-brand', html: 'DYNASTY <em>ANALYTICS</em>' }),
-    el('div', { class: 'foot-dynasty' }, `Brought to you by ${SITE.dynasty}`),
+    SITE.showDynasty
+      ? el('div', { class: 'foot-dynasty' }, `Brought to you by ${SITE.dynasty}`)
+      : null,
 
     el('div', { class: 'foot-cols' },
       col('Explore', [
@@ -2836,8 +2869,8 @@ function renderFooter() {
         ['Data & Sources', '#/about'],
       ]),
       col('Product', [
-        ['League Settings', '#/settings'], ['Plans', '#/pricing'],
-        ['Trends (beta)', '#/trends'], ['Ask (beta)', '#/ask'],
+        ['Sync Your League', '#/sync'], ['League Settings', '#/settings'],
+        ...(SITE.paywall ? [['Plans', '#/pricing']] : []),
       ]),
       col('Site', [
         ['About', '#/about'], ['Contact', '#/contact'],
@@ -2847,19 +2880,24 @@ function renderFooter() {
       ])),
 
     el('div', { class: 'foot-legal' },
-      el('div', {}, `© ${span} ${SITE.legalEntity}. ${SITE.name} and its ` +
-        'analysis, scoring engine and presentation are the property of ' +
-        `${SITE.legalEntity}. Not affiliated with, endorsed by, or sponsored by ` +
-        'Major League Baseball, the NBA, the NFL or any club. League, team and ' +
-        'player names are used descriptively.'),
+      // Falls back to the product name while no registered entity exists, so
+      // the copyright line never names a company that has not been formed.
+      el('div', {}, `© ${span} ${SITE.legalEntity || SITE.name}. The analysis, ` +
+        'scoring engine and presentation on this site are its own work. Not ' +
+        'affiliated with, endorsed by, or sponsored by the NFL, the NBA, Major ' +
+        'League Baseball or any club. League, team and player names are used ' +
+        'descriptively.'),
       el('div', {},
-        'Statistics derived from the Lahman / Chadwick Bureau Baseball Databank, ',
+        'Statistics from the Lahman / Chadwick Bureau Databank (',
         el('a', { href: 'https://creativecommons.org/licenses/by-sa/3.0/',
                   target: '_blank', rel: 'noopener' }, 'CC BY-SA 3.0'),
-        m ? ` · ${m.seasons[0]}–${m.seasons[1]} · ${num(m.players)} players · built ${m.built}` : ''),
+        '), nflverse and the hoopR / sportsdataverse NBA release. ',
+        el('a', { href: '#/about' }, 'Full sources'),
+        m ? ` · ${sport().league} ${m.seasons[0]}–${m.seasons[1]} · built ${m.built}` : ''),
     ),
     el('div', { class: 'foot-mark' },
-      `${SITE.watermarkBy} · ${SITE.legalEntity}`)));
+      [SITE.showByline ? SITE.watermarkBy : null, SITE.legalEntity]
+        .filter(Boolean).join(' · ') || SITE.name)));
 }
 
 /** Small helper so the static pages read like documents, not DOM code. */
@@ -2871,8 +2909,20 @@ const p = (html) => el('p', { html });
 const h3 = (text) => el('h3', {}, text);
 const ul = (items) => el('ul', {}, items.map((i) => el('li', { html: i })));
 
-function viewAbout() {
-  const m = state.meta;
+async function viewAbout() {
+  // Every league is loaded so the page can state each one's real coverage
+  // rather than describing whichever one happens to be selected.
+  const metas = [];
+  for (const id of SPORT_IDS) {
+    try {
+      const entry = await loadSportData(id);
+      metas.push({ id, s: SPORTS[id], m: entry.meta });
+    } catch { /* a league that will not load is left out rather than faked */ }
+  }
+  const totalPlayers = metas.reduce((n, x) => n + (x.m.players || 0), 0);
+  const totalSeasons = metas.reduce((n, x) =>
+    n + (x.m.player_seasons || ((x.m.batting_seasons || 0) + (x.m.pitching_seasons || 0))), 0);
+
   swap(app(),
     el('div', { class: 'view-head' },
       el('h1', {}, `About ${SITE.name}`),
@@ -2881,46 +2931,62 @@ function viewAbout() {
     el('div', { class: 'panel' },
       el('div', { class: 'panel-head' }, el('h2', {}, 'What this is')),
       prose(
-        p(`<span class="lead">A fantasy baseball record book that runs on one league’s
-           scoring instead of the sport’s.</span>`),
-        p(`Baseball’s official statistics were never designed to answer the question
-           fantasy managers actually ask: <b>how many points would this guy have put
-           up for me?</b> This site answers it for every player who has ever appeared
-           in a major-league game — ${num(m.players)} of them, across
-           ${num(m.batting_seasons)} batting seasons and ${num(m.pitching_seasons)}
-           pitching seasons from ${m.seasons[0]} to ${m.seasons[1]}.`),
-        p(`Every total is computed with the league’s exact weights, not an
-           approximation and not a generic points preset. Look up a player, sort the
-           all-time boards, drop into any single season back to ${m.seasons[0]}, or
-           put two careers side by side.`),
+        p(`<span class="lead">A record book for football, basketball and baseball
+           that runs on your league’s scoring instead of the sport’s.</span>`),
+        p(`Official statistics were never designed to answer the question fantasy
+           managers actually ask: <b>how many points would this guy have put up for
+           me?</b> This site answers it in all three leagues, for
+           ${num(totalPlayers)} players across ${num(totalSeasons)} recorded
+           seasons.`),
+        p(`Every total is computed with your league’s exact weights — not an
+           approximation, not a generic points preset. Import your rules once from
+           <a href="#/sync">Sync Your League</a> and every leaderboard, player page
+           and projection on the site recomputes under them.`),
+        p(`The three leagues are not tiers. Each one gets the same tools: player
+           lookup, career and season leaderboards, a year explorer, category
+           leaders, head-to-head compare, advanced rates, projections and the
+           assistant. What differs is only what each sport records — completion
+           percentage in one, true shooting in another, ERA in the third.`),
+
+        h3('What each league covers'),
+        ul(metas.map((x) =>
+          `<b>${x.s.emoji} ${x.s.league} ${x.m.seasons[0]}–${x.m.seasons[1]}.</b> ` +
+          `${num(x.m.players)} players. ${x.m.coverage_note ||
+            'Complete for every season in that range.'}`)),
 
         h3('How the numbers are built'),
         ul([
-          `<b>Scoring.</b> Each stat line is run through the league’s category
-           weights — see the <a href="#/scoring">Scoring</a> page for the full table
-           and for the categories the historical record cannot support.`,
-          `<b>PTS+.</b> Raw totals reward era as much as talent: a pitcher who threw
-           678 innings in 1884 will out-point anyone alive. PTS+ divides a player’s
-           points per opportunity by that season’s qualified-league average and
-           indexes it to 100, so 150 means half again better than his own
-           contemporaries.`,
-          `<b>Percentile rails.</b> The bars on a player page rank him against every
-           qualified player in history — ${num(m.qualifiers.season_pa)}+ PA or
-           ${m.qualifiers.season_ip}+ IP for a season.`,
-          `<b>Empty seasons are dropped.</b> Years with no real playing time — a
-           pitcher who never batted, a call-up who never got in — are removed rather
-           than shown as rows of zeroes.`,
+          `<b>Scoring.</b> Each stat line is run through your category weights —
+           see the <a href="#/scoring">Scoring</a> page for the full table and for
+           the categories the historical record cannot support.`,
+          `<b>PTS+.</b> Raw totals reward era as much as talent: a pitcher who
+           threw 678 innings in 1884 will out-point anyone alive, and a 1996
+           three-point shooter is not competing in the same game as a 2024 one.
+           PTS+ divides points per opportunity by that season’s qualified-league
+           average and indexes it to 100, so 150 means half again better than that
+           player’s own contemporaries.`,
+          `<b>Percentile rails.</b> The bars on a player page rank a player
+           against every qualified player in that league’s dataset.`,
+          `<b>Category leaders.</b> Home runs, assists and rushing yards are
+           computed from the complete season logs, not from the points-ranked
+           boards — so a player who led a category without scoring heavily is
+           still found.`,
+          `<b>Empty seasons are dropped.</b> Years with no real playing time are
+           removed rather than shown as rows of zeroes.`,
         ]),
 
         h3('Where the data comes from'),
-        p(`Statistics come from the <b>Lahman / Chadwick Bureau Baseball Databank</b>,
-           the long-running public record of season-by-season major-league statistics,
-           licensed <a href="https://creativecommons.org/licenses/by-sa/3.0/"
-           target="_blank" rel="noopener">CC BY-SA 3.0</a>. The dataset here was built
-           on ${m.built} and covers complete seasons through ${m.seasons[1]}.`),
+        ul(metas.map((x) => `<b>${x.s.league}.</b> ${x.m.source}`)),
+        p(`Baseball comes from the Lahman / Chadwick Bureau Databank, published
+           under <a href="https://creativecommons.org/licenses/by-sa/3.0/"
+           target="_blank" rel="noopener">CC BY-SA 3.0</a>. All three datasets are
+           historical: they are complete through the seasons listed above and do
+           not include live in-progress games.`),
         p(`<span class="meta">This site is independent. It is not affiliated with,
-           endorsed by, or sponsored by Major League Baseball, any MLB club, or any
-           fantasy platform.</span>`),
+           endorsed by, or sponsored by the NFL, the NBA, Major League Baseball,
+           any club, or any fantasy platform. Statistics are facts; team names and
+           marks belong to their owners and are used here only to identify who
+           played where.</span>`),
 
         watermark(true)),
       adSlot('inline'),
@@ -3053,6 +3119,377 @@ const genCustom = () => {
   const custom = customScoring();
   return !!(custom && custom[state.sport]);
 };
+
+// ------------------------------------------------- parity: every league, same tools
+//
+// Baseball was built first and grew four panels the other two never got:
+// advanced rates, a projection, a written career summary, and head-to-head
+// compare. Football and basketball are not secondary sports here -- football is
+// the largest fantasy audience of the three -- so the same four are built once,
+// generically, against whatever categories a league happens to record.
+//
+// Nothing here is baseball logic wearing a different hat. Each league declares
+// the rates that mean something in that sport, and the shared code does the
+// arithmetic.
+
+/* Advanced rates worth showing, per league. `need` gives a per-game minimum
+ * for the categories a group depends on: a group appears only when that part
+ * of the game was a real part of the player's job. Tom Brady has three career
+ * receptions, and a receiving panel built on them says nothing true about him.
+ * Per-game rather than absolute so a four-year career is judged the same way
+ * as a twenty-year one. */
+const GEN_METRICS = {
+  nfl: [
+    { group: 'Passing', need: { Att: 3 }, rows: [
+      ['Completion %', (t) => (t.Cmp / t.Att) * 100, 1, '%'],
+      ['Yards / attempt', (t) => t.PassYd / t.Att, 2],
+      ['TD %', (t) => (t.PassTD / t.Att) * 100, 1, '%'],
+      ['Interception %', (t) => (t.Int / t.Att) * 100, 1, '%'],
+      ['TD / INT', (t) => (t.Int ? t.PassTD / t.Int : t.PassTD), 2],
+      ['Yards / game', (t) => t.PassYd / t.G, 1],
+    ] },
+    { group: 'Rushing', need: { Car: 1 }, rows: [
+      ['Yards / carry', (t) => t.RushYd / t.Car, 2],
+      ['Carries / game', (t) => t.Car / t.G, 1],
+      ['Yards / game', (t) => t.RushYd / t.G, 1],
+      ['TD / 100 carries', (t) => (t.RushTD / t.Car) * 100, 1],
+    ] },
+    { group: 'Receiving', need: { Rec: 0.5 }, rows: [
+      ['Catch rate', (t) => (t.Tgt ? (t.Rec / t.Tgt) * 100 : null), 1, '%'],
+      ['Yards / catch', (t) => t.RecYd / t.Rec, 2],
+      ['Yards / target', (t) => (t.Tgt ? t.RecYd / t.Tgt : null), 2],
+      ['Catches / game', (t) => t.Rec / t.G, 1],
+      ['Yards / game', (t) => t.RecYd / t.G, 1],
+      ['TD / 10 catches', (t) => (t.RecTD / t.Rec) * 10, 2],
+    ] },
+  ],
+  nba: [
+    { group: 'Per game', need: {}, rows: [
+      ['Points', (t) => t.PTS / t.G, 1],
+      ['Rebounds', (t) => t.REB / t.G, 1],
+      ['Assists', (t) => t.AST / t.G, 1],
+      ['Steals', (t) => t.STL / t.G, 1],
+      ['Blocks', (t) => t.BLK / t.G, 1],
+      ['Turnovers', (t) => t.TOV / t.G, 1],
+      ['Minutes', (t) => t.MIN / t.G, 1],
+    ] },
+    { group: 'Shooting', need: { FGA: 1 }, rows: [
+      ['Field goal %', (t) => (t.FGM / t.FGA) * 100, 1, '%'],
+      ['Free throw %', (t) => (t.FTA ? (t.FTM / t.FTA) * 100 : null), 1, '%'],
+      // True shooting counts threes and free throws at what they are worth,
+      // which is the whole reason a 45% three-point shooter is not "worse"
+      // than a 50% shooter at the rim.
+      ['True shooting %', (t) => (t.PTS / (2 * (t.FGA + 0.44 * t.FTA))) * 100, 1, '%'],
+      ['Threes / game', (t) => t.FG3M / t.G, 1],
+      ['Threes / field goal', (t) => (t.FGM ? t.FG3M / t.FGM : null), 2],
+    ] },
+    { group: 'Per 36 minutes', need: { MIN: 5 }, rows: [
+      ['Points', (t) => (t.PTS / t.MIN) * 36, 1],
+      ['Rebounds', (t) => (t.REB / t.MIN) * 36, 1],
+      ['Assists', (t) => (t.AST / t.MIN) * 36, 1],
+      ['Assist / turnover', (t) => (t.TOV ? t.AST / t.TOV : null), 2],
+    ] },
+  ],
+};
+
+/** Career (or single-season) totals for a generic player, by category name. */
+function genTotals(rows) {
+  const stats = genStats();
+  const t = { G: 0 };
+  for (const name of stats) t[name] = 0;
+  for (const r of rows) {
+    t.G += r[GEN.G] || 0;
+    stats.forEach((name, i) => { t[name] += r[4 + i] || 0; });
+  }
+  return t;
+}
+
+/** The advanced-rate panels for whichever league is active. */
+function genMetricsPanels(rows, label) {
+  const groups = GEN_METRICS[state.sport];
+  if (!groups || !rows.length) return null;
+  const t = genTotals(rows);
+  if (!t.G) return null;
+
+  const panels = groups.map((g) => {
+    // Skip the whole group rather than printing a column of near-zeroes.
+    if (!Object.entries(g.need).every(([k, perGame]) => (t[k] || 0) / t.G >= perGame)) return null;
+    const cells = g.rows.map(([name, fn, dp, unit]) => {
+      const v = fn(t);
+      if (v === null || !Number.isFinite(v)) return null;
+      return [name, `${num(v, dp)}${unit || ''}`];
+    }).filter(Boolean);
+    if (!cells.length) return null;
+    // Built here rather than through metricsPanel(), which takes raw numbers
+    // and applies baseball's own rounding table. These rates are already
+    // formatted -- a completion percentage is 62.5, not 0.625 -- so they are
+    // rendered as given, in the same markup so the styling matches.
+    return el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' },
+        el('h2', {}, `${label} — ${g.group.toLowerCase()}`),
+        el('span', { class: 'hint' }, 'Computed in your browser from the totals on this page')),
+      el('div', { class: 'metrics' },
+        cells.map(([name, value]) => el('div', { class: 'metric' },
+          el('div', { class: 'metric-label' }, name),
+          el('div', { class: 'metric-value' }, value)))),
+      watermark());
+  }).filter(Boolean);
+
+  return panels.length ? panels : null;
+}
+
+/* A projection for leagues whose seasons are a flat row of categories. Same
+ * Marcel shape as the baseball one -- last three seasons weighted 5/4/3,
+ * regressed toward a prior, adjusted for age -- but it works on points per
+ * game, which is the one denominator every sport shares. */
+function genMarcel(rows, birthYear) {
+  if (!rows.length) return null;
+  const weights = genWeights();
+  const sorted = [...rows].sort((a, b) => b[GEN.YEAR] - a[GEN.YEAR]);
+  const recent = sorted.slice(0, 3);
+  const lastYear = recent[0][GEN.YEAR];
+  const seasonWeights = [5, 4, 3];
+
+  let wPts = 0, wG = 0, wTotal = 0;
+  recent.forEach((row, i) => {
+    const w = seasonWeights[i];
+    wPts += w * genScore(genRead(row), weights);
+    wG += w * (row[GEN.G] || 0);
+    wTotal += w;
+  });
+  if (!wG) return null;
+
+  // Regress toward the average of everyone in this league who played a real
+  // number of games. A prior of 30 games is roughly a third of a basketball
+  // season and twice a football one, which is the right amount of scepticism
+  // for each: football seasons are short, so a single one proves less.
+  const prior = state.sport === 'nfl' ? 12 : 30;
+  const leagueRate = state.genRates.get(
+    `${state.sport}:${genCustom() ? 'custom' : 'default'}`) ?? (wPts / wG);
+  const regressed = (wPts + leagueRate * prior) / (wG + prior);
+
+  const projG = (recent[0][GEN.G] || 0) * 0.9 + (wG / wTotal) * 0.1 * 3;
+  const age = birthYear ? (lastYear + 1) - birthYear : null;
+  const ageFactor = age === null ? 1
+    : age > AGE_PEAK ? Math.max(0.7, 1 - 0.003 * (age - AGE_PEAK) ** 1.4)
+                     : Math.min(1.1, 1 + 0.006 * (AGE_PEAK - age));
+
+  return {
+    season: lastYear + 1,
+    age: age === null ? null : age + 1,
+    rate: regressed,
+    games: Math.round(projG),
+    points: regressed * projG * ageFactor,
+    ageFactor,
+    seasonsUsed: recent.length,
+  };
+}
+
+/** The average points per game across this league, for regression. Cached per
+ *  league and per scoring choice -- change your weights and the league average
+ *  moves with them, so a rate cached under the old ones would be wrong. */
+async function genLeagueRate() {
+  const key = `${state.sport}:${genCustom() ? 'custom' : 'default'}`;
+  if (state.genRates.has(key)) return state.genRates.get(key);
+  let rate;
+  try {
+    const board = await getBoard('lb_career');
+    const weights = genWeights();
+    let pts = 0, g = 0;
+    for (const r of board) {
+      if ((r.G || 0) < 20) continue;   // a four-game career is not a league average
+      pts += genCustom() ? genScore((k) => Number(r[k]) || 0, weights) : r.pts;
+      g += r.G;
+    }
+    rate = g ? pts / g : undefined;
+  } catch { rate = undefined; }
+  state.genRates.set(key, rate);
+  return rate;
+}
+
+function genProjectionPanel(p) {
+  const born = p.bio?.born ? Number(String(p.bio.born).slice(0, 4)) : null;
+  const m = genMarcel(p.s || [], born);
+  if (!m) return null;
+  const s = sport();
+
+  return el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, `Projected ${m.season}`),
+      el('span', { class: 'hint' },
+        'Marcel-style forecast · scored on your current settings')),
+    el('div', { class: 'tiles' },
+      tile('Projected points', num(m.points, 0),
+        m.age ? `age ${m.age} season` : null, true),
+      tile('Points / game', num(m.rate, 2), `over ${num(m.games)} games`),
+      tile('Games assumed', num(m.games), `${m.seasonsUsed} season${m.seasonsUsed === 1 ? '' : 's'} used`),
+      tile('Age curve', m.age ? m2pct(m.ageFactor) : '—',
+        m.age ? (m.ageFactor >= 1 ? 'still improving' : 'past peak')
+              : 'no birth date in this dataset')),
+    el('div', { class: 'note', html:
+      '<b>How this is built.</b> The last three seasons weighted 5/4/3, ' +
+      'regressed toward the league rate, then adjusted for age off a peak of ' +
+      `${AGE_PEAK}. Marcel is the deliberately simple baseline any forecast ` +
+      'should beat, not a full projection system — treat it as a sanity check, ' +
+      'not a draft board. It rescores instantly when you change your league ' +
+      'settings.' +
+      (m.age ? '' : ` The ${s.league} dataset carries no birth dates, so the ` +
+        'age adjustment is left at neutral rather than guessed.') }),
+    watermark());
+}
+
+/* A written summary of a career, generated from the record rather than typed
+ * out. Baseball gets curated nicknames because no public database has them;
+ * everything else here is computed and therefore works for all three leagues. */
+function genBioPanel(p, rank) {
+  const s = sport();
+  const rows = p.s || [];
+  if (!rows.length) return null;
+  const t = genTotals(rows);
+  const stats = genStats();
+  const span = `${p.yrs[0]}–${p.yrs[1]}`;
+  const years = p.yrs[1] - p.yrs[0] + 1;
+  const clubs = [...new Set(p.teams || [])];
+
+  const bits = [];
+  bits.push(`${p.n} played ${rows.length} ${s.league} season${rows.length === 1 ? '' : 's'} ` +
+    `between ${p.yrs[0]} and ${p.yrs[1]}` +
+    (clubs.length === 1 ? ` for ${teamName(clubs[0])}.`
+      : ` for ${clubs.length} clubs.`));
+
+  // Whatever this league leads with, said in plain numbers.
+  const headline = stats.slice(0, 3)
+    .filter((k) => (t[k] || 0) > 0)
+    .map((k) => `${num(t[k], t[k] % 1 ? 1 : 0)} ${k}`);
+  if (headline.length) bits.push(`Career totals: ${headline.join(', ')}, over ${num(t.G)} games.`);
+
+  if (rank) {
+    bits.push(`That is ${ordinal(rank)} in this dataset by fantasy points under ` +
+      `${genCustom() ? 'your scoring' : 'the default scoring'}.`);
+  }
+  if (p.bio?.college) bits.push(`College: ${p.bio.college}.`);
+  if (p.bio?.rookie) bits.push(`Entered the league in ${p.bio.rookie}.`);
+
+  const facts = [
+    ['Seasons', `${rows.length} (${span})`],
+    ['Clubs', clubs.length ? clubs.map(teamName).join(', ') : '—'],
+    ['Games', num(t.G)],
+    ['Position', p.pos || p.bio?.pos || '—'],
+    years !== rows.length ? ['Note', `${years} calendar years, ${rows.length} played`] : null,
+  ].filter(Boolean);
+
+  return el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' },
+      el('h2', {}, 'Career summary'),
+      el('span', { class: 'hint' }, 'Written from the record on this page')),
+    el('div', { class: 'prose' }, el('p', {}, bits.join(' '))),
+    el('div', { class: 'factgrid' },
+      facts.map(([k, v]) => el('div', { class: 'fact' },
+        el('div', { class: 'fact-key' }, k),
+        el('div', { class: 'fact-val' }, v)))),
+    el('div', { class: 'chip-row' },
+      el('a', {
+        class: 'chip', target: '_blank', rel: 'noopener noreferrer',
+        href: `https://en.wikipedia.org/w/index.php?search=${encodeURIComponent(`${p.n} ${s.league}`)}`,
+      }, 'Wikipedia ↗')),
+    watermark());
+}
+
+/* Head to head, for leagues whose careers are a flat row of categories. The
+ * baseball version reads batting and pitching records; this reads whatever the
+ * league records, so the same page works for a wide receiver and a centre. */
+async function viewGenericCompare(idsParam) {
+  const s = sport();
+  const ids = (idsParam || '').split(',').filter(Boolean).map(resolveId).filter(Boolean);
+  state.compare = ids;
+
+  const head = el('div', { class: 'view-head' },
+    el('h1', {}, `Compare ${s.league} Players`),
+    el('p', {}, 'Put careers side by side in league points. Search for a player ' +
+      'and use “+ Add to compare”, or add one below.'));
+
+  const adder = el('div', { class: 'filters' },
+    el('div', { class: 'field' },
+      el('label', {}, 'Add player'),
+      el('input', {
+        type: 'text', placeholder: 'Type a name and press Enter',
+        onkeydown: (e) => {
+          if (e.key !== 'Enter') return;
+          const hit = searchPlayers(e.target.value, 1)[0];
+          if (hit && !ids.includes(hit.id)) {
+            go(`#/${s.id}/compare/${[...ids, hit.id].map(pidOf).join(',')}`);
+          }
+          e.target.value = '';
+        },
+      })),
+    ids.length ? el('button', { class: 'btn',
+      onclick: () => go(`#/${s.id}/compare`) }, 'Clear all') : null);
+
+  const grid = el('div', { class: 'compare-grid' });
+  swap(app(), head, el('div', { class: 'panel' },
+    el('div', { class: 'panel-head' }, el('h2', {}, 'Head to head')), adder, grid,
+    watermark()));
+
+  if (!ids.length) {
+    grid.append(el('div', { class: 'cmp-empty' },
+      'Add two or more players to compare their careers.'));
+    return;
+  }
+
+  const allowed = isPro() ? ids : ids.slice(0, FREE.comparePlayers);
+  const players = (await Promise.all(allowed.map((id) => getShard(id))))
+    .filter((p) => p && Array.isArray(p.s));
+  if (allowed.length < ids.length) {
+    grid.after(upgradeBar(
+      `Comparing ${ids.length} players needs Pro`,
+      `The free plan compares ${FREE.comparePlayers} at a time.`));
+  }
+  if (!players.length) {
+    grid.append(el('div', { class: 'cmp-empty' }, 'None of those players are in this dataset.'));
+    return;
+  }
+
+  const weights = genWeights();
+  const totals = players.map((p) => {
+    const t = genTotals(p.s);
+    const pts = p.s.reduce((sum, r) => sum + genScore(genRead(r), weights), 0);
+    const best = p.s.reduce((b, r) => Math.max(b, genScore(genRead(r), weights)), 0);
+    return { p, t, pts, best };
+  });
+
+  // The first four categories a league records, plus the universals.
+  const leagueCats = genStats().slice(0, 4);
+  const metrics = [
+    ['Career points', (x) => x.pts, 0],
+    ['Best season', (x) => x.best, 0],
+    ['Points / season', (x) => x.pts / (x.p.s.length || 1), 1],
+    ['Points / game', (x) => x.pts / (x.t.G || 1), 2],
+    ['Seasons', (x) => x.p.s.length, 0],
+    ['Games', (x) => x.t.G, 0],
+    ...leagueCats.map((k) => [k, (x) => x.t[k] || 0, 0]),
+  ];
+
+  const best = metrics.map(([, fn]) => Math.max(...totals.map(fn)));
+
+  totals.forEach((x) => {
+    const card = el('div', { class: 'cmp-card' },
+      el('h3', {}, el('a', { href: playerHref(x.p.i), class: 'plink' }, x.p.n)),
+      el('div', { class: 'yrs' },
+        `${x.p.yrs[0]}–${x.p.yrs[1]}${x.p.pos ? ` · ${x.p.pos}` : ''}`));
+    metrics.forEach(([label, fn, dp], m) => {
+      const v = fn(x);
+      if (!v && m >= 6) return;   // a receiver has no passing yards worth a row
+      card.append(el('div', { class: `cmp-row${v === best[m] && v > 0 ? ' best' : ''}` },
+        el('span', {}, label), el('span', {}, num(v, dp))));
+    });
+    card.append(el('div', { style: 'margin-top:12px' },
+      el('button', {
+        class: 'btn',
+        onclick: () => go(`#/${s.id}/compare/${ids.filter((y) => y !== x.p.i).map(pidOf).join(',')}`),
+      }, 'Remove')));
+    grid.append(card);
+  });
+}
 
 async function viewGenericPlayer(key) {
   const id = resolveId(key);
@@ -3201,8 +3638,15 @@ async function viewGenericPlayer(key) {
     }
   }
 
+  mount(container, genBioPanel(p, rank));
+
   mount(container, teamHistoryPanel(
     rows.map((r) => [r[GEN.YEAR], r[GEN.TEAM]]), 'Team history'));
+
+  mount(container, genMetricsPanels(rows, 'Career'));
+
+  await genLeagueRate();
+  mount(container, genProjectionPanel(p));
 
   if (p.inj) {
     const inj = p.inj;
@@ -3638,7 +4082,7 @@ function viewPricing() {
           [[true, `Top ${FREE.boardRows} of every all-time leaderboard`],
            [true, 'Full career totals and percentile rails for any player'],
            [true, `${FREE.seasonRows} seasons of any player's game log`],
-           [true, `Top ${FREE.yearRows} of any single season, back to 1871`],
+           [true, `Top ${FREE.yearRows} of any single season, in every league`],
            [true, `Compare up to ${FREE.comparePlayers} players`],
            [false, 'Live current-season stats'],
            [false, 'CSV export'],
@@ -3800,7 +4244,8 @@ async function viewHome() {
         'Every player. ', el('em', {}, 'Your'), ' scoring.'),
       el('p', { class: 'hero-sub' },
         'Put your league’s rules in once and see how anyone in the record ' +
-        'book would have scored for you — across baseball, football and basketball.'),
+        'book would have scored for you — football, basketball and baseball, ' +
+        'all three under the same rules.'),
       el('div', { class: 'hero-actions' },
         el('a', { class: 'btn primary', href: '#/settings' }, 'Set your league scoring'),
         el('a', { class: 'btn', href: `#/${s.id}/career` }, 'Browse all-time leaders'),
@@ -3903,9 +4348,11 @@ async function viewHome() {
         'system you control — not the sport’s own statistics. Change what a ' +
         'stolen base or a reception is worth and the all-time order changes ' +
         'with it. That is the point.'),
-      el('p', {}, 'Set stolen bases to 10 in ',
+      el('p', {}, 'Turn receptions up to 2 points in ',
         el('a', { href: '#/settings' }, 'My League'),
-        ' and Rickey Henderson passes Barry Bonds on the baseball board, live.')),
+        ' and the football board reorders around slot receivers. Do the same to ' +
+        'stolen bases and Rickey Henderson passes Barry Bonds. Every league ' +
+        'behaves the same way.')),
     el('a', { class: 'home-more', href: '#/settings' }, 'Set your scoring →')));
 
   cards.push(el('article', { class: 'home-card wide' },
@@ -3934,8 +4381,9 @@ const HEALTH = [
   ['Player Lookup', '#/player', 'live',
    'Search any player and see their career scored in league points, with ' +
    'percentile rails, a points-by-season chart and the full stat log.',
-   'Baseball is complete. Football and basketball use the generic renderer, ' +
-   'which has no profile, projection or advanced-metric panels yet.'],
+   'All three leagues now carry the same panels: career summary, team history, ' +
+   'advanced rates, projection and the season log. What each shows differs by ' +
+   'sport because the sports record different things.'],
   ['Career Leaders', '#/career', 'live',
    'Every career ranked by fantasy points, filterable and sortable.',
    'Nothing blocking. Adding league-relative filters (division, era) would help.'],
@@ -3945,14 +4393,17 @@ const HEALTH = [
   ['Year Explorer', '#/year', 'live',
    'Any single season, scored your way.',
    'Nothing blocking.'],
-  ['This Season', '#/live', 'partial',
+  ['This Season', '#/live', 'parked',
    'Current-season totals fetched live from the MLB Stats API in the browser.',
-   'Baseball only, and never verified against the real API from the build ' +
-   'environment (egress blocked). First real page load is the true test. ' +
-   'Football and basketball have no live feed wired up.'],
-  ['Compare', '#/compare', 'partial',
+   'Pulled from the customer navigation. It exists for one league out of three ' +
+   'and has never made a real request from the build environment, which makes ' +
+   'it the least finished thing on the site. It stays reachable by URL for ' +
+   'testing. Turning it back on means a data source for all three leagues — ' +
+   'see Build Plan & Costs.'],
+  ['Compare', '#/compare', 'live',
    'Careers side by side with the best value per row highlighted.',
-   'Reads the baseball record shape; needs the generic path for NFL/NBA.'],
+   'Works in all three leagues. The baseball version splits batting and ' +
+   'pitching; the others compare on whatever categories that sport records.'],
   ['My League', '#/settings', 'live',
    'The product: set your own scoring weights and every page recomputes from ' +
    'raw counting stats.',
@@ -3992,6 +4443,11 @@ const HEALTH = [
    'paste-in reader needs no network and covers every other platform. None of ' +
    'the three network paths has been exercised from the build sandbox — its ' +
    'egress blocks all of them — so the first real call happens in a browser.'],
+  ['Parked for Review', '#/parked', 'live',
+   'Everything pulled out of the customer-facing site because it is not ' +
+   'finished, with what each item needs before it goes back.',
+   'Read it once before deploying. Four of the items are decisions only you ' +
+   'can make; three are waiting on the same backend.'],
   ['Build Plan & Costs', '#/roadmap', 'live',
    'Owner view of the work left: four phases, what each step costs, the live-' +
    'data licensing question, and how monetisation would actually work.',
@@ -4007,6 +4463,7 @@ const STATUS_META = {
   partial: ['PARTIAL', 'Works, with a stated gap'],
   planned: ['PLANNED', 'Described, not built'],
   demo:    ['DEMO', 'Real UI, not enforceable'],
+  parked:  ['PARKED', 'Built, but pulled out of the customer site — see Parked for Review'],
 };
 
 async function viewHealth() {
@@ -4052,7 +4509,7 @@ async function viewHealth() {
       el('span', { class: 'hint' }, `${HEALTH.length} surfaces`)),
     el('div', { class: 'health-list' },
       HEALTH.map(([name, route, status, what, next]) => {
-        const [label, blurb] = STATUS_META[status];
+        const [label, blurb] = STATUS_META[status] || [status.toUpperCase(), ''];
         return el('div', { class: `health-item ${status}` },
           el('div', { class: 'health-head' },
             el('a', { class: 'health-name', href: route }, name),
@@ -4684,15 +5141,40 @@ const REACH_META = {
 /** Read a pasted scoring page. Tolerant on purpose: platforms format these
  *  wildly differently, and a parser that only understands one of them is a
  *  parser for one platform. */
+/* Categories a platform scores as one thing that this site stores as several.
+ * Yahoo baseball leagues very often score "Hits" rather than listing singles,
+ * doubles and triples separately -- and a home run is also a hit, so the value
+ * lands on all four. Total bases is the same idea weighted by base. These are
+ * additive on top of any explicit category, which is exactly how the platforms
+ * treat them: a league scoring Hits 1 and Home Runs 3 pays 4 for a homer. */
+const SYNC_SPREAD = {
+  mlb: [
+    { syn: ['total bases', 'total base'], spread: { '1B': 1, '2B': 2, '3B': 3, HR: 4 } },
+    { syn: ['hits', 'hit'], spread: { '1B': 1, '2B': 1, '3B': 1, HR: 1 } },
+  ],
+  nfl: [
+    // Yahoo lists one combined two-point category; this site stores the three
+    // ways a conversion can happen. One line in, three weights out.
+    { syn: ['2 point conversions', '2 point conversion', 'two point conversions'],
+      spread: { Pass2PT: 1, Rush2PT: 1, Rec2PT: 1 } },
+  ],
+  nba: [],
+};
+
 function parsePastedScoring(text, sportId) {
   const cats = catsFor(sportId);
   // Longest synonym first so "three point field goals made" is claimed before
-  // "field goals" can take it.
-  const lookup = cats
-    .flatMap((c) => c.syn.map((sy) => [sy, c.key]))
-    .sort((a, b) => b[0].length - a[0].length);
+  // "field goals" can take it, and "total bases" before "bases on balls".
+  const lookup = [
+    ...cats.flatMap((c) => c.syn.map((sy) => [sy, { key: c.key }])),
+    ...(SYNC_SPREAD[sportId] || []).flatMap((d) => d.syn.map((sy) => [sy, { spread: d.spread }])),
+  ].sort((a, b) => b[0].length - a[0].length);
 
-  const scoring = {};
+  // Explicit categories take their first mention; spread categories accumulate.
+  // Kept apart so "Hits 1" followed by "Home Runs 3" reaches 4 rather than
+  // whichever one happened to be read first.
+  const explicit = {};
+  const spread = {};
   const unmapped = [];
   const lines = text.split(/[\n\r]+/).map((l) => l.trim());
 
@@ -4710,13 +5192,18 @@ function parsePastedScoring(text, sportId) {
     const hit = lookup.find(([sy]) =>
       new RegExp(`(^|[^a-z0-9])${sy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(flat));
 
-    // "1 point per 25 passing yards" and "every 25 passing yards = 1 point"
-    // both mean 0.04 a yard. Pull the divisor out first, then read the value
-    // from what is left -- otherwise the 25 gets mistaken for the value and
-    // the imported scoring is wrong by a factor of several hundred.
-    const per = flat.match(/\b(?:per|every|each)\s+(\d+(?:\.\d+)?)\b/);
-    const divisor = per ? Number(per[1]) : 1;
-    const rest = raw.replace(/\b(?:per|every|each)\s+\d+(?:\.\d+)?\b/, ' ');
+    // Per-unit scoring arrives in two word orders and both mean the same thing:
+    //   "1 point per 25 passing yards"           -> 0.04 a yard
+    //   "Passing Yards (25 yards per point)  1"  -> 0.04 a yard
+    // The second is Yahoo's house style. Missing it reads the weight as 25
+    // instead of 0.04 and silently imports scoring that is wrong by a factor
+    // of several hundred, which is worse than importing nothing.
+    const PER_POINT = /\b(\d+(?:\.\d+)?)\s*(?:yards?|yds?|receptions?)?\s*per\s+point\b/;
+    const PER_N = /\b(?:per|every|each)\s+(\d+(?:\.\d+)?)\b/;
+    const perPoint = flat.match(PER_POINT);
+    const perN = perPoint ? null : flat.match(PER_N);
+    const divisor = Number((perPoint || perN || [])[1]) || 1;
+    const rest = raw.replace(PER_POINT, ' ').replace(PER_N, ' ');
     let nums = rest.match(/-?\d+(?:\.\d+)?/g);
 
     // Platforms that lay their settings out as a table put the category on one
@@ -4727,16 +5214,27 @@ function parsePastedScoring(text, sportId) {
     }
     if (!nums) continue;
 
-    const value = Number(nums[nums.length - 1]) / (divisor || 1);
+    const value = Number(nums[nums.length - 1]) / divisor;
     if (!Number.isFinite(value)) continue;
 
-    if (hit) {
+    if (hit && hit[1].spread) {
+      for (const [k, mult] of Object.entries(hit[1].spread)) {
+        spread[k] = (spread[k] || 0) + value * mult;
+      }
+    } else if (hit) {
       // First mention wins: settings pages often repeat a category lower down
       // in a summary or a bonus table.
-      if (scoring[hit[1]] === undefined) scoring[hit[1]] = value;
-    } else if (/[a-z]/.test(flat)) {
+      if (explicit[hit[1].key] === undefined) explicit[hit[1].key] = value;
+    } else if (/[a-z]/.test(flat) && value !== 0) {
+      // A zero on a line nothing recognised is a category the league does not
+      // score. Reporting it as "read but not used" is noise, not information.
       unmapped.push([line.slice(0, 60), value]);
     }
+  }
+
+  const scoring = {};
+  for (const k of new Set([...Object.keys(explicit), ...Object.keys(spread)])) {
+    scoring[k] = Number(((explicit[k] || 0) + (spread[k] || 0)).toFixed(6));
   }
   return { leagueName: null, teams: null, roster: [], scoring, unmapped };
 }
@@ -4861,7 +5359,25 @@ function viewSync() {
           'four — documented, supported, and it will not change under you. It ' +
           'uses OAuth 2.0, which means an app secret. A secret shipped to a ' +
           'browser is a secret published. Until there is a server to hold it, ' +
-          'paste your settings below and it works the same.' }) : null,
+          'paste your settings below — the reader understands Yahoo’s own ' +
+          'format, including “25 yards per point” and a single Hits or ' +
+          '2-Point Conversions line that has to become several weights.' }) : null,
+        p.id === 'yahoo' ? el('ol', { class: 'plan-steps sync-steps' },
+          [['Open your league on Yahoo Fantasy',
+            'Any browser, signed in as normal.'],
+           ['Go to League → Settings',
+            'On the league home page, the Settings link is under the League tab.'],
+           ['Scroll to the scoring table',
+            'It is titled “Fantasy Points” or “Stat Categories and Point Values”, ' +
+            'depending on the sport.'],
+           ['Select that table and copy it',
+            'Click and drag across the whole table, then copy. Extra headings, ' +
+            'section titles and stray text are ignored.'],
+           ['Paste it below and press Read this',
+            'Nothing changes until you have seen what was read and pressed apply.'],
+          ].map(([head, detail]) => el('li', { class: 'plan-step' },
+            el('div', { class: 'plan-step-head' }, el('b', {}, head)),
+            el('p', {}, detail)))) : null,
         el('label', { class: 'sync-label' }, 'Paste your league’s scoring settings'),
         box,
         el('div', { class: 'sync-actions' },
@@ -4972,6 +5488,173 @@ function viewSync() {
       watermark()));
 
   draw();
+}
+
+// --------------------------------------------------------------- parked items
+//
+// Things a visitor should not see yet, and why. Each entry names what it is,
+// what is unfinished about it, exactly what has to be true before it goes back
+// in front of customers, and where the switch lives.
+//
+// The rule for this list: a stranger seeing it would either be misled or
+// unimpressed. An unregistered company name in a copyright line is a claim
+// that is not true yet. A personal name on a product page is a hobby signal. A
+// pricing page for a product that charges nothing is a promise of a thing that
+// does not exist. None of those are bugs, and all of them are reasons someone
+// decides this is not a serious product.
+//
+// Nothing here is deleted. Every one is a flag in SITE, so any of them can be
+// turned back on the moment the thing behind it is real.
+
+const PARKED = [
+  {
+    what: 'Company name in the copyright line',
+    was: `“© Kaliris Labs” on every page footer, and named as the owner of the ` +
+         'scoring engine in the Terms.',
+    why: 'Kaliris Labs is not a registered company. A copyright line naming an ' +
+         'entity that does not exist is a claim you cannot support, and it is ' +
+         'the first thing a lawyer reads. An individual is a perfectly valid ' +
+         'copyright holder — no company is required to publish.',
+    now: 'The footer credits the product name only. Privacy and Terms refer to ' +
+         '“the operator of this site”.',
+    unblock: 'Form the LLC in Massachusetts, then set SITE.legalEntity to the ' +
+             'registered name. Roughly $500 and a week.',
+    flag: 'SITE.legalEntity',
+  },
+  {
+    what: 'Personal name in the watermark',
+    was: '“Built by Bill Kaliris Jr” in the footer mark.',
+    why: 'A personal byline reads as a portfolio piece rather than a product. ' +
+         'It is also your real name on a page you are about to send to ' +
+         'strangers, which is a decision worth making on purpose rather than ' +
+         'by default.',
+    now: 'The mark carries the product name only.',
+    unblock: 'Nothing technical. Decide whether you want to be publicly ' +
+             'attached to this before launch, and set SITE.showByline.',
+    flag: 'SITE.showByline',
+  },
+  {
+    what: 'The Dynasty (6x) 💍 footer line',
+    was: '“Brought to you by The Dynasty (6x) 💍” under the wordmark on every page.',
+    why: 'It means something to your league and nothing to anyone else. On a ' +
+         'public product it reads as an inside joke a stranger is not in on, ' +
+         'which is the opposite of the effect you want on a first visit.',
+    now: 'Hidden. It is a good line for an About page story or a launch post — ' +
+         'it just should not be site furniture.',
+    unblock: 'Set SITE.showDynasty to true if you decide you want it anyway. ' +
+             'It is your product and this is a taste call, not a rule.',
+    flag: 'SITE.showDynasty',
+  },
+  {
+    what: 'Plans / pricing page',
+    was: 'A Free vs Pro comparison page with a tier switch, reachable from the ' +
+         'footer.',
+    why: 'Metering is switched off, so the page advertises limits that are not ' +
+         'enforced and a Pro tier nobody can buy. Showing a price for a thing ' +
+         'that cannot be purchased costs trust for no gain.',
+    now: 'Removed from the footer. Still reachable at #/pricing so you can ' +
+         'review the layout.',
+    unblock: 'It comes back automatically when SITE.paywall is set to true — ' +
+             'which should not happen before there is a backend that can ' +
+             'actually enforce it and people who would pay.',
+    flag: 'SITE.paywall',
+  },
+  {
+    what: 'Trends (beta)',
+    was: 'A Tools entry labelled “Waiver and hot/cold — in development”.',
+    why: 'It is a page describing a feature rather than a feature. A visitor ' +
+         'clicking a nav item and finding a promise learns that the nav cannot ' +
+         'be trusted.',
+    now: 'Moved out of the customer navigation into the Owner folder.',
+    unblock: 'Needs a scheduled job collecting platform trend data. That means ' +
+             'a backend — the same one everything else is waiting on.',
+    flag: 'NAV (owner folder)',
+  },
+  {
+    what: 'This Season / live stats',
+    was: 'An Explore entry fetching current-season totals from the MLB Stats API.',
+    why: 'Two problems at once. It exists for one league out of three, which ' +
+         'breaks the promise that all three are equal, and it has never made a ' +
+         'real request from the build environment because outbound calls to ' +
+         'every sports API are blocked here. It is the least verified thing on ' +
+         'the site.',
+    now: 'Out of the customer navigation. Still at #/mlb/live for testing.',
+    unblock: 'A current-season source for all three leagues, and one real ' +
+             'successful request. See the live-data section of Build Plan & Costs.',
+    flag: 'SITE.live.enabled',
+  },
+  {
+    what: 'Ask (beta)',
+    was: 'A footer link to a natural-language page separate from the assistant.',
+    why: 'Duplicates the assistant, which works and is honest about its limits. ' +
+         'Two doors to one half-built room.',
+    now: 'Removed from the footer. The working assistant is Ask AI in Tools.',
+    unblock: 'Fold anything worth keeping into the assistant, or delete the ' +
+             'route. A language-model version needs a backend to hold the key.',
+    flag: 'route #/ask',
+  },
+  {
+    what: 'Blank social profiles',
+    was: 'LinkedIn and Facebook fields in the contact block.',
+    why: 'They were never filled in, so they render as nothing. Harmless, but ' +
+         'they are on the list because Contact looks thinner than it should.',
+    now: 'Twitter, Instagram and email render. The two blanks are simply absent.',
+    unblock: 'Paste the full profile URLs into SITE.linkedin and SITE.facebook. ' +
+             'A URL guessed from a display name lands on a stranger, so these ' +
+             'have to be copied from the profiles themselves.',
+    flag: 'SITE.linkedin / SITE.facebook',
+  },
+  {
+    what: 'Which email address receives mail',
+    was: 'bkaliris@gmail.com is in the config; every handle you gave is bkaliris10.',
+    why: 'A contact address that is one character wrong is worse than no ' +
+         'contact address — the sender thinks they reached you.',
+    now: 'Still set to bkaliris@gmail.com. Unresolved, and the only item on ' +
+         'this list that is a question rather than a decision.',
+    unblock: 'Tell me which address is right and I will set it.',
+    flag: 'SITE.contactEmail',
+  },
+];
+
+function viewParked() {
+  const live = PARKED.filter((x) => x.flag.startsWith('SITE.')).length;
+  swap(app(),
+    el('div', { class: 'view-head' },
+      el('h1', {}, 'Parked for Review'),
+      el('p', {}, 'Owner view. Things pulled out of the customer-facing site ' +
+        'because they are not finished, with what each one needs before it ' +
+        'goes back.')),
+
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' }, el('h2', {}, 'At a glance')),
+      el('div', { class: 'tiles' },
+        tile('Parked', String(PARKED.length), 'items hidden from visitors', true),
+        tile('One flag each', String(live), 'switchable in the SITE config'),
+        tile('Waiting on you', '4', 'decisions nobody else can make'),
+        tile('Waiting on a server', '3', 'the same backend, three times')),
+      el('div', { class: 'note', html:
+        '<b>Nothing here is deleted.</b> Every item is a flag rather than a ' +
+        'removal, so any of them can be switched back on the moment the thing ' +
+        'behind it is real. The test each one failed is the same: would a ' +
+        'stranger seeing this be misled, or unimpressed?' }),
+      watermark()),
+
+    el('div', { class: 'panel' },
+      el('div', { class: 'panel-head' },
+        el('h2', {}, 'Every parked item'),
+        el('span', { class: 'hint' }, `${PARKED.length} items`)),
+      el('div', { class: 'health-list' },
+        PARKED.map((x) => el('div', { class: 'health-item' },
+          el('div', { class: 'health-head' },
+            el('span', { class: 'health-name' }, x.what),
+            el('span', { class: 'pill status-planned', title: 'Hidden from visitors' }, 'PARKED')),
+          el('p', { class: 'health-what' }, el('b', {}, 'Was: '), x.was),
+          el('p', { class: 'health-what' }, el('b', {}, 'Why: '), x.why),
+          el('p', { class: 'health-what' }, el('b', {}, 'Now: '), x.now),
+          el('div', { class: 'health-next' }, el('b', {}, 'To bring it back: '), x.unblock),
+          el('div', { class: 'plan-tags' },
+            el('span', { class: 'plan-tag' }, x.flag))))),
+      watermark()));
 }
 
 // ------------------------------------------------------------- build plan
@@ -5591,11 +6274,19 @@ async function route() {
   const parts = path.split('/');
 
   // Routes are #/<sport>/<view>/<arg>. A first segment that is not a known
-  // sport means an older link from before the site had leagues -- treat it as
-  // a view under baseball so nothing anyone bookmarked breaks.
+  // sport means an older link from before the site had leagues. Those were
+  // minted when this was a baseball-only site, so they still resolve to
+  // baseball -- the default league changing must not silently repoint a link
+  // somebody already shared.
   const hasSport = SPORTS[parts[0]] !== undefined;
-  const sportId = hasSport ? parts[0] : 'mlb';
   const [view, arg] = hasSport ? parts.slice(1) : parts;
+  // Only the views that actually show a league's data fall back to baseball.
+  // A bare #/home or #/about is not an old baseball link, it is a page that
+  // belongs to whichever league you are already in -- and on a cold start that
+  // is the default league, not the one this site happened to be built for.
+  const LEGACY_VIEWS = ['player', 'career', 'season', 'year', 'live', 'compare', 'scoring'];
+  const sportId = hasSport ? parts[0]
+    : (LEGACY_VIEWS.includes(view) ? 'mlb' : state.sport);
 
   if (sportId !== state.sport || !state.meta) await applySport(sportId);
 
@@ -5606,18 +6297,17 @@ async function route() {
   const generic = sport().generic === true;
   const dataViews = ['player', 'career', 'season', 'year', 'live', 'compare'];
   if (view === 'home') { await viewHome(); return; }
-  if (generic && ['live', 'compare'].includes(view)) {
+  if (generic && ['live'].includes(view)) {
     return swap(app(),
       el('div', { class: 'view-head' },
-        el('h1', {}, `${sport().league} ${view === 'live' ? 'This Season' : 'Compare'}`),
+        el('h1', {}, `${sport().league} This Season`),
         el('p', {}, sport().tagline)),
       el('div', { class: 'panel' },
         el('div', { class: 'panel-head' }, el('h2', {}, 'Baseball only, for now')),
         el('div', { class: 'empty-state' },
-          el('h3', {}, `${view === 'live' ? 'Live stats' : 'Compare'} is not wired up for ${sport().league}`),
-          el('div', {}, view === 'live'
-            ? `${sport().league} data is a published season file, not a live feed. Historical seasons are complete and searchable.`
-            : 'Head-to-head comparison currently reads the baseball record shape.')),
+          el('h3', {}, `Live stats are not wired up for ${sport().league}`),
+          el('div', {}, `${sport().league} data is a published season file, not a ` +
+            'live feed. Historical seasons are complete and searchable.')),
         el('div', { class: 'empty-state' },
           el('div', {}, 'Try ', el('a', { href: `#/${sport().id}/career` }, `${sport().league} Career Leaders`), '.')),
         watermark()));
@@ -5639,10 +6329,10 @@ async function route() {
       case 'career':  await (generic ? viewGenericBoard('career') : viewLeaders('career')); break;
       case 'season':  await (generic ? viewGenericBoard('season') : viewLeaders('season')); break;
       case 'year':    await (generic ? viewGenericYear(arg) : viewYear(arg)); break;
-      case 'compare': await viewCompare(arg); break;
+      case 'compare': await (generic ? viewGenericCompare : viewCompare)(arg); break;
       case 'scoring': generic ? viewGenericScoring() : viewScoring(); break;
       case 'live':    await viewLive(); break;
-      case 'about':   viewAbout(); break;
+      case 'about':   await viewAbout(); break;
       case 'contact': viewContact(); break;
       case 'privacy': viewPrivacy(); break;
       case 'terms':   viewTerms(); break;
@@ -5654,6 +6344,7 @@ async function route() {
       case 'admin':   viewAdmin(); break;
       case 'health':  await viewHealth(); break;
       case 'roadmap': viewRoadmap(); break;
+      case 'parked':  viewParked(); break;
       case 'home':    await viewHome(); break;
       case 'chat':    viewChat(); break;
       default:        await viewHome();
@@ -5671,8 +6362,8 @@ async function route() {
 async function boot() {
   initTheme();   // before any await, so the toggle works even if data fails
   try {
-    await loadSportData('mlb');
-    useSportData('mlb');
+    await loadSportData(DEFAULT_SPORT);
+    useSportData(DEFAULT_SPORT);
 
     buildSidebar();
     initDrawer();
