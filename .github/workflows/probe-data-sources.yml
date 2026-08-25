@@ -1,0 +1,73 @@
+name: Probe data sources
+
+# A diagnostic, not part of the site build.
+#
+# The market pipeline's provider choice can only be validated from a GitHub
+# runner: providers that answer happily from a laptop refuse datacenter IP
+# ranges, which is exactly how the Yahoo path failed. This workflow asks each
+# candidate endpoint one question and prints what came back, so the choice is
+# made on evidence instead of on what the docs imply.
+#
+# Run it from the Actions tab, or by pushing a change to this file.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/probe-data-sources.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+
+      - name: Probe
+        run: |
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import requests, textwrap
+
+          UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+          SEC_UA = "Kaliris Markets probe (github.com/bk-the-commander/Fantasy-Analyzer)"
+
+          CASES = [
+              ("yahoo chart v8",      "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d", {}),
+              ("yahoo chart q2",      "https://query2.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d", {}),
+              ("yahoo crumb",         "https://query1.finance.yahoo.com/v1/test/getcrumb", {}),
+              ("yahoo rss",           "https://feeds.finance.yahoo.com/rss/2.0/headline?s=AAPL&region=US&lang=en-US", {}),
+              ("stooq daily csv",     "https://stooq.com/q/d/l/?s=aapl.us&i=d", {}),
+              ("stooq last quote",    "https://stooq.com/q/l/?s=aapl.us&f=sd2t2ohlcv&h&e=csv", {}),
+              ("stooq batch quote",   "https://stooq.com/q/l/?s=aapl.us+msft.us+spy.us&f=sd2t2ohlcv&h&e=csv", {}),
+              ("stooq index ^spx",    "https://stooq.com/q/l/?s=^spx&f=sd2t2ohlcv&h&e=csv", {}),
+              ("sec company_tickers", "https://www.sec.gov/files/company_tickers.json", {"User-Agent": SEC_UA}),
+              ("sec submissions",     "https://data.sec.gov/submissions/CIK0000320193.json", {"User-Agent": SEC_UA}),
+              ("sec companyfacts",    "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json", {"User-Agent": SEC_UA}),
+              ("sec company concept", "https://data.sec.gov/api/xbrl/companyconcept/CIK0000320193/us-gaap/Revenues.json", {"User-Agent": SEC_UA}),
+              ("google news rss",     "https://news.google.com/rss/search?q=AAPL+stock&hl=en-US&gl=US&ceid=US:en", {}),
+              ("nasdaq api",          "https://api.nasdaq.com/api/quote/AAPL/info?assetclass=stocks", {}),
+              ("frankfurter fx",      "https://api.frankfurter.app/latest?from=USD&to=EUR", {}),
+          ]
+
+          print("## Data source probe\n")
+          print("| source | status | bytes | first 110 chars |")
+          print("|---|---|---|---|")
+          for name, url, extra in CASES:
+              headers = {"User-Agent": UA, "Accept": "*/*"}
+              headers.update(extra)
+              try:
+                  r = requests.get(url, headers=headers, timeout=25)
+                  body = r.text or ""
+                  peek = textwrap.shorten(body.replace("|", "\\|").replace("\n", " ").strip(),
+                                          width=110, placeholder=" …")
+                  print(f"| `{name}` | **{r.status_code}** | {len(r.content)} | `{peek}` |")
+              except Exception as exc:
+                  print(f"| `{name}` | **ERR** | 0 | `{type(exc).__name__}: {str(exc)[:90]}` |")
+          PY
