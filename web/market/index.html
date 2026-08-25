@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kaliris Markets — screener, heatmap and charts</title>
+<meta name="description" content="A personal market terminal: screener, sector heatmap, candlestick charts, headlines and insider filings.">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="dark light">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230f1218'/><path d='M5 22 L12 15 L17 19 L27 8' stroke='%230ca30c' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<div id="banner" class="banner" hidden></div>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#/" aria-label="Kaliris Markets home">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <rect width="32" height="32" rx="7"></rect>
+        <path d="M5 22 L12 15 L17 19 L27 8" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
+      </svg>
+      <span class="brand-text"><b>Kaliris</b> Markets</span>
+    </a>
+
+    <nav class="nav" id="nav" aria-label="Sections"></nav>
+
+    <div class="topbar-tools">
+      <div class="search" role="combobox" aria-expanded="false" aria-haspopup="listbox" aria-owns="search-results">
+        <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <input id="search" type="search" placeholder="Search ticker or company" autocomplete="off"
+               spellcheck="false" aria-controls="search-results" aria-label="Search ticker or company">
+        <kbd class="search-kbd">/</kbd>
+        <ul id="search-results" class="search-results" role="listbox" hidden></ul>
+      </div>
+      <button id="cvd-toggle" class="icon-button" type="button" title="Switch colour palette" aria-label="Switch colour palette">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6" cy="8" r="4" fill="currentColor" opacity=".85"/><circle cx="10" cy="8" r="4" fill="currentColor" opacity=".45"/></svg>
+      </button>
+      <button id="theme-toggle" class="icon-button" type="button" title="Switch theme" aria-label="Switch theme">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5A5 5 0 0 1 8 1.5Z" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div id="ticker-tape" class="tape" aria-label="Index levels"></div>
+
+<main id="main" tabindex="-1">
+  <div id="view" class="view"></div>
+</main>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <p class="footer-meta" id="footer-meta"></p>
+    <p class="footer-note">
+      Built for one person, not for the internet. Prices are delayed and provided as-is;
+      nothing here is investment advice or a solicitation to trade.
+    </p>
+  </div>
+</footer>
+
+<div id="hover-chart" class="hover-chart" hidden aria-hidden="true"></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

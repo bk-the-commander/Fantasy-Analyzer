@@ -1,0 +1,102 @@
+# ---------------------------------------------------------------------------
+# YOUR UNIVERSE
+#
+# This file is the list of symbols the terminal tracks. It is meant to be
+# edited -- that is the whole point of a screener built for one person. Add a
+# ticker on its own line, delete one you never look at, regroup them however
+# you like. Blank lines and lines starting with "#" are ignored, and a symbol
+# that no longer trades is dropped by the build with a warning rather than
+# breaking anything.
+#
+# Sector, industry, market cap and every fundamental column are looked up at
+# build time, so a bare symbol is all that is needed here.
+#
+# Size guidance: each symbol costs roughly one HTTP request per full build.
+# ~600 is comfortable. A few thousand starts to take real time.
+# ---------------------------------------------------------------------------
+
+# ------------------------------------------------------------ technology
+AAPL MSFT GOOGL GOOG AMZN NVDA META TSLA AVGO ORCL
+CRM AMD ADBE NFLX INTC CSCO QCOM TXN IBM NOW
+INTU AMAT MU LRCX ADI KLAC SNPS CDNS PANW CRWD
+ANET MRVL FTNT ADSK ROP APH MCHP NXPI ON TEAM
+DDOG SNOW ZS NET PYPL SHOP UBER ABNB DASH COIN
+PLTR RBLX SPOT TTD ZM OKTA TWLO MDB HUBS WDAY
+VEEV DELL HPQ HPE WDC STX SMCI GLW KEYS TER
+TYL PTC ANSS FICO IT CTSH ACN INFY EPAM GDDY
+AKAM JNPR NTAP FFIV ZBRA TRMB VRSN MSI CIEN LSCC
+
+# ------------------------------------------------------------ financials
+BRK-B JPM BAC WFC GS MS C SCHW BLK SPGI
+AXP V MA COF USB PNC TFC BK STT AIG
+MET PRU ALL TRV PGR CB AON MMC ICE CME
+NDAQ MCO AMP DFS SYF FITB HBAN RF KEY CFG
+MTB ZION NTRS RJF IVZ BEN TROW HIG L WRB
+CINF AFL GL PFG UNM EG ACGL RNR AIZ MKTX
+
+# ------------------------------------------------------------ healthcare
+UNH JNJ LLY PFE MRK ABBV TMO ABT DHR BMY
+AMGN GILD CVS CI ELV HUM ISRG SYK BSX MDT
+ZBH BDX BAX EW REGN VRTX MRNA BIIB IQV A
+DXCM IDXX RMD WST HOLX ILMN CRL MTD ZTS COR
+MCK CAH HSIC DGX LH UHS HCA CNC MOH PODD
+ALGN STE BIO TFX XRAY VTRS OGN INCY EXAS NBIX
+
+# ------------------------------------------------------------ consumer
+WMT COST TGT HD LOW PG KO PEP PM MO
+MDLZ CL KMB GIS K HSY SYY KR DG DLTR
+ROST TJX NKE LULU SBUX MCD CMG YUM DPZ DRI
+MAR HLT BKNG EXPE RCL CCL NCLH LVS WYNN MGM
+F GM RIVN LCID APTV BWA ORLY AZO AAP GPC
+LKQ TSCO ULTA BBY EBAY ETSY W CHWY DKS FIVE
+KDP STZ BF-B TAP MNST CELH KHC CAG CPB SJM
+HRL TSN MKC CHD CLX EL COTY YETI CROX DECK
+
+# ------------------------------------------------------------ industrials
+BA CAT DE HON GE MMM LMT RTX NOC GD
+LHX UNP CSX NSC UPS FDX WM RSG EMR ETN
+ITW PH ROK CMI PCAR JCI CARR OTIS TT DOV
+AME FAST GWW URI PWR EFX VRSK CTAS PAYX ADP
+J ACM MAS BLDR NVR DHI LEN PHM TOL SWK
+TXT HWM HEI TDG AXON LDOS BAH CACI SAIC WAB
+ODFL JBHT CHRW XPO SAIA EXPD DAL UAL LUV AAL
+
+# ------------------------------------------------------------ energy
+XOM CVX COP EOG SLB PSX VLO MPC OXY HES
+DVN FANG HAL BKR KMI WMB OKE TRGP LNG APA
+CTRA MRO EQT AR RRC SWN NOV FTI CHRD PR
+
+# ------------------------------------------------------------ materials
+LIN APD SHW ECL DD DOW NEM FCX NUE STLD
+VMC MLM PPG IFF ALB CE CF MOS LYB EMN
+PKG IP AMCR AVY SEE BALL CCK X CLF RS
+
+# ------------------------------------------------------------ utilities
+NEE DUK SO D AEP EXC SRE XEL ED PEG
+WEC ES AWK PCG EIX DTE PPL FE AEE CMS
+CNP NI LNT EVRG ATO NRG VST CEG PNW OGE
+
+# ------------------------------------------------------------ real estate
+PLD AMT CCI EQIX PSA SPG O WELL DLR VTR
+AVB EQR ESS MAA UDR INVH ARE BXP IRM WY
+CBRE CPT KIM REG FRT HST EXR SBAC VICI GLPI
+
+# ------------------------------------------------------------ communication
+DIS CMCSA T VZ TMUS CHTR WBD PARA EA TTWO
+LYV OMC IPG NYT FOXA FOX MTCH PINS SNAP RDDT
+
+# ------------------------------------------------------------ etfs
+# Broad market
+SPY QQQ DIA IWM VTI VOO RSP MDY IJH IJR
+# International
+VEA VWO EFA EEM IEFA IEMG VXUS ACWI EWJ FXI
+# Fixed income
+AGG BND TLT IEF SHY LQD HYG TIP BIL MUB
+# Commodities & currency
+GLD SLV IAU USO UNG DBC PDBC UUP FXE IBIT
+# Sectors
+XLE XLF XLK XLV XLI XLY XLP XLU XLB XLRE
+XLC SMH SOXX XBI IBB ITB XHB KRE KIE XOP
+# Themes & factors
+ARKK VNQ VIG VYM SCHD DVY QUAL MTUM USMV VLUE
+JETS TAN ICLN LIT SKYY HACK ROBO IGV XT MOAT

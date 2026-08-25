@@ -1658,6 +1658,9 @@ function renderFooter() {
       ]),
       col('Site', [
         ['About', '#/about'], ['Contact', '#/contact'],
+        // The other half of the workshop: a personal market terminal, served
+        // from the same Pages site at /market.
+        ['Markets Terminal', 'market/'],
       ]),
       col('Legal', [
         ['Privacy Policy', '#/privacy'], ['Terms of Use', '#/terms'],

@@ -1,0 +1,5 @@
+# The market pipeline's only dependency. Deliberately separate from the
+# repository's root requirements.txt, which pulls in pandas and pybaseball for
+# the fantasy-baseball side of the house -- the data job installs this file and
+# stays a few seconds long instead of a few minutes.
+requests>=2.31

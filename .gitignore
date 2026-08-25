@@ -7,3 +7,6 @@ __pycache__/
 node_modules/
 package-lock.json
 .cache/
+
+# Market pipeline cache: bars and fundamentals reused between runs.
+.market-cache/

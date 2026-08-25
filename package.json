@@ -2,10 +2,15 @@
   "name": "dynasty-sports-analytics",
   "version": "1.0.0",
   "private": true,
-  "description": "Dynasty Sports Analytics — all-time MLB fantasy points explorer. A Kaliris Labs project.",
+  "description": "Dynasty Sports Analytics \u2014 all-time MLB fantasy points explorer, plus Kaliris Markets, a personal market terminal. A Kaliris Labs project.",
   "scripts": {
     "serve": "python3 -m http.server 8811 -d web",
-    "smoke": "node scripts/smoke_web.js"
+    "smoke": "node scripts/smoke_web.js",
+    "smoke:market": "node scripts/smoke_market.js",
+    "market:demo": "python3 scripts/build_demo_market_data.py --out web/market/data",
+    "market:build": "python3 scripts/build_market_data.py --out web/market/data --mode daily",
+    "market:quotes": "python3 scripts/build_market_data.py --out web/market/data --mode quotes",
+    "test": "python3 -m pytest tests/test_market.py -q"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

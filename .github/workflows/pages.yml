@@ -1,8 +1,22 @@
-name: Deploy site to GitHub Pages
+name: Build data and deploy site
 
-# Publishes web/ as the live site. Enable it once under
-# Settings -> Pages -> Source: GitHub Actions, then every push to a listed
-# branch redeploys.
+# Publishes web/ as the live site, and refreshes the market dataset on the way
+# past.
+#
+# Two things happen here, in order:
+#
+#   1. scripts/build_market_data.py fetches live prices, fundamentals,
+#      headlines and SEC Form 4 filings, and writes them into
+#      web/market/data/. Nothing is committed back -- the runner has the fresh
+#      copy, it goes straight into the Pages artifact, and the repository stays
+#      free of a daily churn of megabytes.
+#   2. web/ is uploaded and deployed.
+#
+# If step 1 fails -- Yahoo changes an endpoint, the runner has a bad day -- the
+# demo dataset committed in the repository is still there, so the site deploys
+# and says so in its own banner rather than going dark.
+#
+# Enable this once under Settings -> Pages -> Source: GitHub Actions.
 
 on:
   push:
@@ -11,14 +25,35 @@ on:
       - master
       # Both working branches are listed so the deploy fires whether the site
       # is merged into the current default branch or the default branch is
-      # repointed at the lookup branch. Pages itself only publishes from the
-      # default branch, so the other one simply no-ops.
+      # repointed at a working branch. Pages itself only publishes from the
+      # default branch, so the others simply no-op.
       - claude/fantasy-baseball-lookup-7en33b
       - claude/fantasy-baseball-points-8j55fo
+      - claude/custom-finviz-dashboard-oxir0w
     paths:
       - 'web/**'
+      - 'market/**'
+      - 'scripts/build_market_data.py'
       - '.github/workflows/pages.yml'
+
+  schedule:
+    # Quarter-hourly through the US session. 13:00-21:00 UTC covers 9:30-16:00
+    # Eastern in both EDT (UTC-4) and EST (UTC-5) without needing to know which
+    # is in effect. GitHub runs scheduled jobs on a best-effort basis and can
+    # be several minutes late under load, which is fine for a delayed feed.
+    - cron: '*/15 13-21 * * 1-5'
+    # One full rebuild after the close: a year of bars, fundamentals for every
+    # symbol, headlines, and the SEC insider sweep.
+    - cron: '30 22 * * 1-5'
+
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Build mode'
+        required: false
+        default: 'auto'
+        type: choice
+        options: [auto, daily, quotes]
 
 permissions:
   contents: read
@@ -32,11 +67,80 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # A full build is a couple of minutes; anything near this ceiling means a
+    # provider is hanging, and a stale deploy beats a stuck job.
+    timeout-minutes: 25
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pipeline dependencies
+        run: pip install -r market/requirements.txt
+
+      # Bars and fundamentals are cached between runs so the quarter-hourly
+      # refresh is six quote requests rather than twelve hundred history ones.
+      - name: Restore market cache
+        uses: actions/cache@v4
+        with:
+          path: .market-cache
+          key: market-cache-${{ github.run_id }}
+          restore-keys: |
+            market-cache-
+
+      - name: Decide build mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.mode || 'auto' }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "30 22 * * 1-5" ]; then
+            echo "mode=daily" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "mode=daily" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=auto" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build market dataset
+        id: market
+        continue-on-error: true
+        env:
+          # The SEC asks automated clients for a contact route. Set the
+          # SEC_USER_AGENT repository variable to your own email to be a better
+          # citizen; the default identifies the project.
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+        run: |
+          python scripts/build_market_data.py \
+            --out web/market/data \
+            --mode "${{ steps.mode.outputs.mode }}" \
+            --cache .market-cache
+
+      - name: Report dataset status
+        run: |
+          if [ "${{ steps.market.outcome }}" != "success" ]; then
+            echo "::warning::Live market build failed; deploying with the committed demo dataset."
+          fi
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          meta = json.loads(pathlib.Path("web/market/data/meta.json").read_text())
+          print("## Market dataset\n")
+          print(f"- source: `{meta.get('source')}`  ")
+          print(f"- mode: `{meta.get('mode')}`  ")
+          print(f"- symbols: **{meta.get('symbols')}** of {meta.get('requested')}  ")
+          print(f"- generated: {meta.get('generated_iso')}  ")
+          print(f"- build time: {meta.get('duration_seconds')}s  ")
+          failed = meta.get("failed") or []
+          if failed:
+              print(f"- unavailable ({len(failed)}): {', '.join(failed[:40])}")
+          if meta.get("source") == "demo":
+              print("\n> Deployed with demo data — the live fetch did not produce a dataset.")
+          PY
+
       - uses: actions/configure-pages@v5
         with:
           # Turn Pages on from here rather than requiring a trip to repo
@@ -44,8 +148,10 @@ jobs:
           # same "Get Pages site failed" error and the switch has to be
           # flipped manually under Settings -> Pages -> Source: GitHub Actions.
           enablement: true
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web
+
       - id: deployment
         uses: actions/deploy-pages@v4

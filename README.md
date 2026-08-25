@@ -1,5 +1,11 @@
 # Dynasty Sports Analytics
 
+> **Also in this repository:** [**Kaliris Markets**](market/README.md) — a
+> personal market terminal (screener, sector heatmap, candlestick charts,
+> headlines, insider filings) built in the same no-framework style and served
+> from the same Pages site at `/market`. Real data, refreshed every 15 minutes
+> by a scheduled GitHub Action. See [`market/README.md`](market/README.md).
+
 Tools for a 12-team Yahoo H2H points, all-baseball, keeper league. Two pieces:
 
 1. **[Dynasty Sports Analytics](web/)** — the public web app. Every MLB player
