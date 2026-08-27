@@ -39,25 +39,25 @@ jobs:
           SEC_UA = "Kaliris Markets probe (github.com/bk-the-commander/Fantasy-Analyzer)"
 
           CASES = [
-              ("yahoo chart v8",      "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d", {}),
-              ("yahoo chart q2",      "https://query2.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d", {}),
-              ("yahoo crumb",         "https://query1.finance.yahoo.com/v1/test/getcrumb", {}),
-              ("yahoo rss",           "https://feeds.finance.yahoo.com/rss/2.0/headline?s=AAPL&region=US&lang=en-US", {}),
-              ("stooq daily csv",     "https://stooq.com/q/d/l/?s=aapl.us&i=d", {}),
-              ("stooq last quote",    "https://stooq.com/q/l/?s=aapl.us&f=sd2t2ohlcv&h&e=csv", {}),
-              ("stooq batch quote",   "https://stooq.com/q/l/?s=aapl.us+msft.us+spy.us&f=sd2t2ohlcv&h&e=csv", {}),
-              ("stooq index ^spx",    "https://stooq.com/q/l/?s=^spx&f=sd2t2ohlcv&h&e=csv", {}),
-              ("sec company_tickers", "https://www.sec.gov/files/company_tickers.json", {"User-Agent": SEC_UA}),
-              ("sec submissions",     "https://data.sec.gov/submissions/CIK0000320193.json", {"User-Agent": SEC_UA}),
-              ("sec companyfacts",    "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json", {"User-Agent": SEC_UA}),
-              ("sec company concept", "https://data.sec.gov/api/xbrl/companyconcept/CIK0000320193/us-gaap/Revenues.json", {"User-Agent": SEC_UA}),
-              ("google news rss",     "https://news.google.com/rss/search?q=AAPL+stock&hl=en-US&gl=US&ceid=US:en", {}),
-              ("nasdaq api",          "https://api.nasdaq.com/api/quote/AAPL/info?assetclass=stocks", {}),
-              ("frankfurter fx",      "https://api.frankfurter.app/latest?from=USD&to=EUR", {}),
+              # Nasdaq's own public API answered from a runner, so the question
+              # is now which of its endpoints carry what the terminal needs.
+              ("nasdaq screener all",  "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=5&offset=0", {}),
+              ("nasdaq screener dl",   "https://api.nasdaq.com/api/screener/stocks?tableonly=false&limit=25&download=true", {}),
+              ("nasdaq etf screener",  "https://api.nasdaq.com/api/screener/etf?tableonly=true&limit=5&offset=0", {}),
+              ("nasdaq historical",    "https://api.nasdaq.com/api/quote/AAPL/historical?assetclass=stocks&fromdate=2025-08-01&todate=2026-08-25&limit=400", {}),
+              ("nasdaq info",          "https://api.nasdaq.com/api/quote/AAPL/info?assetclass=stocks", {}),
+              ("nasdaq summary",       "https://api.nasdaq.com/api/quote/AAPL/summary?assetclass=stocks", {}),
+              ("nasdaq financials",    "https://api.nasdaq.com/api/company/AAPL/financials?frequency=1", {}),
+              ("nasdaq insider",       "https://api.nasdaq.com/api/company/AAPL/insider-trades?limit=10&type=ALL&sortname=lastDate&sorttype=1", {}),
+              ("nasdaq etf info",      "https://api.nasdaq.com/api/quote/SPY/info?assetclass=etf", {}),
+              ("nasdaq etf hist",      "https://api.nasdaq.com/api/quote/SPY/historical?assetclass=etf&fromdate=2026-06-01&todate=2026-08-25&limit=90", {}),
+              ("nasdaq index info",    "https://api.nasdaq.com/api/quote/COMP/info?assetclass=index", {}),
+              ("nasdaq realtime",      "https://api.nasdaq.com/api/quote/AAPL/realtime-trades?&limit=5&fromTime=00:00", {}),
+              ("google news rss aapl", "https://news.google.com/rss/search?q=AAPL+stock&hl=en-US&gl=US&ceid=US:en", {}),
           ]
 
           print("## Data source probe\n")
-          print("| source | status | bytes | first 110 chars |")
+          print("| source | status | bytes | first 170 chars |")
           print("|---|---|---|---|")
           for name, url, extra in CASES:
               headers = {"User-Agent": UA, "Accept": "*/*"}
@@ -66,7 +66,7 @@ jobs:
                   r = requests.get(url, headers=headers, timeout=25)
                   body = r.text or ""
                   peek = textwrap.shorten(body.replace("|", "\\|").replace("\n", " ").strip(),
-                                          width=110, placeholder=" …")
+                                          width=170, placeholder=" …")
                   print(f"| `{name}` | **{r.status_code}** | {len(r.content)} | `{peek}` |")
               except Exception as exc:
                   print(f"| `{name}` | **ERR** | 0 | `{type(exc).__name__}: {str(exc)[:90]}` |")
