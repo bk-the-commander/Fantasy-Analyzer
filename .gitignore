@@ -10,3 +10,6 @@ package-lock.json
 
 # Market pipeline cache: bars and fundamentals reused between runs.
 .market-cache/
+
+# Single-file bundle output.
+dist/

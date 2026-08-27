@@ -10,7 +10,8 @@
     "market:demo": "python3 scripts/build_demo_market_data.py --out web/market/data",
     "market:build": "python3 scripts/build_market_data.py --out web/market/data --mode daily",
     "market:quotes": "python3 scripts/build_market_data.py --out web/market/data --mode quotes",
-    "test": "python3 -m pytest tests/test_market.py -q"
+    "test": "python3 -m pytest tests/test_market.py -q",
+    "market:bundle": "python3 scripts/build_market_bundle.py --out dist/kaliris-markets.html && node scripts/check_market_bundle.js dist/kaliris-markets.html"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
